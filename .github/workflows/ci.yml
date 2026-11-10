@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # the diff gate needs the merge-base
-      - uses: richardwooding/codemetrics@v0.12.7
+      - uses: richardwooding/codemetrics@v0.13.1
         with:
           max-cognitive: "15"
 
