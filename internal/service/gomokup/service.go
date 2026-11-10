@@ -119,8 +119,30 @@ type Service struct {
 	// both-sides-validate hash check would then reject every later move
 	// (unrecoverable without a rejoin). Callers therefore snapshot the state,
 	// capture gen after mutating, and roll back on send failure — but only if
-	// gen is unchanged, i.e. no peer frame landed in between and moved the
-	// state on legitimately.
+	// gen is unchanged, i.e. nothing else landed in between and moved the state
+	// on legitimately.
+	//
+	// THE INVARIANT: gen advances exactly once for every write to the state that
+	// rollback can rewind — which is every write, from any goroutine, in any
+	// direction. That includes the local user actions (hostOpen, hostClaim,
+	// hostRelease, Begin, Place, Resign) AND every inbound path that used to be
+	// invisible here: the frame handlers (handleNewGame, handleOpen, handleSeats,
+	// handlePlace, handleResign), MemberLeft, Restore and OnPromote.
+	//
+	// Getting this wrong is expensive in one direction only, so the rule is
+	// deliberately "bump whenever state actually changed":
+	//
+	//   - A missed bump is a correctness bug. The peer's write is real, gen still
+	//     matches, and rollback clobbers it — resurrecting a departed player or
+	//     discarding a peer's new game.
+	//   - A spurious bump is a lesser bug but still a bug: it cancels a rollback
+	//     that was genuinely needed, leaving this end ahead of every peer. So
+	//     paths that must not change anything (a repeated claim, a duplicate seat
+	//     list, a leave from a participant this end never seated) return without
+	//     bumping — see hostClaim/hostRelease, handleSeats and MemberLeft.
+	//
+	// gen is monotonic by construction: it lives here, outside stateSnapshot, so
+	// a rollback or a Restore can never rewind it. It only ever increases.
 	gen uint64
 }
 
@@ -132,9 +154,16 @@ func (s *Service) Version() int { return 1 }
 func (s *Service) Attach(ctx service.Context) { s.SetContext(ctx) }
 
 // OnPromote resets rematch bookkeeping when this end is promoted to host.
+//
+// This is a state write like any other — it changes ring.Games, which decides
+// the opening turn of the next Begin — so it must be visible to a broadcast that
+// is in flight on another goroutine. Missing it here let a rollback started
+// before the promotion restore the pre-promotion Games counter.
 func (s *Service) OnPromote() {
 	s.mu.Lock()
+	prev := s.saveLocked()
 	s.ring.OnPromote()
+	s.writeLocked(prev)
 	s.mu.Unlock()
 }
 
@@ -162,11 +191,21 @@ func (s *Service) MemberLeft(id wire.ParticipantID) {
 	// Pruning unconditionally is safe: `claimed` is a mirror of the host's
 	// authoritative list, and every end receives the same MemberLeft for the
 	// same participant, so all ends converge without needing a broadcast.
+	prev := s.saveLocked()
 	s.claimed = removeID(s.claimed, id)
 	winnerSeat, over := s.ring.NoteLeft(id, s.ph)
 	if over {
 		s.endLocked(winnerSeat)
 	}
+	// NoteLeft has recorded the departure; drop everyone known-departed, so a
+	// participant whose leave this end already saw can never be listed as
+	// seated again by a stale list that arrived in between.
+	s.claimed = removeDeparted(s.claimed, s.ring.Departed)
+	// A leave is a state write: it prunes claimed, marks a seat Gone and can end
+	// the game. Bump gen so a broadcast that is in flight on another goroutine
+	// cannot roll any of that away (and see restoreLocked, which additionally
+	// refuses to forget the departure itself).
+	s.writeLocked(prev)
 	inLobby := s.lobby
 	seats := idsToU32(s.claimed)
 	s.mu.Unlock()
@@ -183,7 +222,7 @@ func (s *Service) MemberLeft(id wire.ParticipantID) {
 //
 // Every mutating local action follows the same shape:
 //
-//	s.mu.Lock(); prev := s.saveLocked(); ...mutate...; gen := s.gen; s.mu.Unlock()
+//	s.mu.Lock(); prev := s.saveLocked(); ...mutate...; gen := s.writeLocked(prev); s.mu.Unlock()
 //	body, err := wire.Marshal(...)             // pre-lock, cheap
 //	if err := s.Ctx().Send.Broadcast(...); err != nil { s.rollback(prev, gen); ... }
 //
@@ -192,13 +231,21 @@ func (s *Service) MemberLeft(id wire.ParticipantID) {
 // and holding s.mu there would wedge the mux goroutine and every peer frame
 // behind it.
 //
-// gen guards the rollback: if a peer frame landed while we were broadcasting, it
-// has already moved the state forward legitimately, and restoring an older
-// snapshot would clobber it. In that case we keep the newer state and report the
-// send error only.
+// gen guards the rollback: if ANYTHING else wrote state while we were
+// broadcasting — a peer frame, a session leave, a late-joiner snapshot, a host
+// promotion — that write has already moved the state forward legitimately, and
+// restoring an older snapshot would clobber it. In that case we keep the newer
+// state and report the send error only.
+//
+// writeLocked is what keeps that guarantee honest across the whole package: it
+// bumps gen iff the state really changed, and EVERY write path calls it — the
+// local actions, the inbound frame handlers, MemberLeft, Restore and OnPromote.
+// A missed call is a correctness bug (a real peer write becomes invisible to
+// rollback); a spurious bump is also a bug (it cancels a rollback that was
+// needed), which is why no-op paths return before mutating anything at all.
 
-// stateSnapshot is a value copy of everything a local action can mutate. Board
-// is a fixed-size array so this allocation is cheap and cannot alias.
+// stateSnapshot is a value copy of everything a rollback can rewind. Board is a
+// fixed-size array so this allocation is cheap and cannot alias.
 type stateSnapshot struct {
 	ring    game.Ring
 	lobby   bool
@@ -211,7 +258,13 @@ type stateSnapshot struct {
 	history []string
 }
 
-// saveLocked copies the mutable state. Caller holds s.mu.
+// saveLocked copies the rewindable state. Caller holds s.mu.
+//
+// ring.Departed is deliberately NOT in the copy: it is a monotone fact set, not
+// rewindable state. A departure is final (participant IDs are never reused
+// within a session), so rolling one back would leave this end permanently
+// convinced that a player who is gone is still here — and Departed is the only
+// replay source that could ever correct it. See restoreLocked.
 func (s *Service) saveLocked() stateSnapshot {
 	return stateSnapshot{
 		// Ring's slices are replaced (never mutated in place) by SetSeats/
@@ -229,9 +282,22 @@ func (s *Service) saveLocked() stateSnapshot {
 	}
 }
 
-// restoreLocked puts a snapshot back. Caller holds s.mu.
+// restoreLocked puts a snapshot back, then re-derives what happened while the
+// failed broadcast was in flight and must not be thrown away:
+//
+//   - ring.Departed is carried across from the LIVE ring, never from prev. A
+//     leave observed during the broadcast is a fact about the session, and the
+//     restore is not entitled to forget it.
+//   - the effects of those departures are replayed against the restored state,
+//     because they were originally computed against a state no peer ever saw.
+//     Replaying is the right thing to do rather than copying them: the failed
+//     move is gone, so the turn it advanced is back where every peer still has
+//     it, and a leave that looked like "the turn holder left" at broadcast time
+//     may well be an ordinary off-turn leave from their point of view.
 func (s *Service) restoreLocked(prev stateSnapshot) {
+	departed := s.ring.Departed // live, monotone: never rewound
 	s.ring = cloneRing(prev.ring)
+	s.ring.Departed = departed
 	s.lobby = prev.lobby
 	s.claimed = append([]wire.ParticipantID(nil), prev.claimed...)
 	s.board = prev.board
@@ -240,15 +306,54 @@ func (s *Service) restoreLocked(prev stateSnapshot) {
 	s.draw = prev.draw
 	s.last = prev.last
 	s.history = cloneHistory(prev.history)
+	// The snapshot's lobby list may predate the leave: drop anyone we now know has
+	// gone, so a rollback cannot put a departed player back in the seating list.
+	s.claimed = removeDeparted(s.claimed, s.ring.Departed)
+	s.applyDepartedLocked()
 }
 
-// rollback undoes a local mutation whose broadcast failed, unless a peer frame
-// landed meanwhile (gen changed) — in which case the newer state wins.
+// writeLocked reports a state write to the rollback protocol and returns gen.
+//
+// Callers call it while still holding s.mu, immediately after mutating, with the
+// snapshot taken just before the mutation. It bumps gen only when the state
+// actually differs, so an idempotent frame (a repeated seat list, a duplicate
+// leave) does not masquerade as a write and cancel somebody else's rollback.
+func (s *Service) writeLocked(prev stateSnapshot) uint64 {
+	if !s.stateEqualLocked(prev) {
+		s.gen++
+	}
+	return s.gen
+}
+
+// stateEqualLocked reports whether the live state matches a snapshot. gen is not
+// part of the state, and ring.Departed is not rewindable, so neither is compared.
+func (s *Service) stateEqualLocked(prev stateSnapshot) bool {
+	return ringEqual(s.ring, prev.ring) &&
+		s.lobby == prev.lobby &&
+		slices.Equal(s.claimed, prev.claimed) &&
+		s.board == prev.board &&
+		s.ph == prev.ph &&
+		s.winner == prev.winner &&
+		s.draw == prev.draw &&
+		s.last == prev.last &&
+		slices.Equal(s.history, prev.history)
+}
+
+func ringEqual(a, b game.Ring) bool {
+	if a.Turn != b.Turn || a.Max != b.Max || a.Games != b.Games ||
+		!slices.Equal(a.Seats, b.Seats) || !slices.Equal(a.Gone, b.Gone) {
+		return false
+	}
+	return true
+}
+
+// rollback undoes a local mutation whose broadcast failed, unless something else
+// wrote state meanwhile (gen changed) — in which case the newer state wins.
 func (s *Service) rollback(prev stateSnapshot, gen uint64) {
 	s.mu.Lock()
 	if s.gen != gen {
 		s.mu.Unlock()
-		return // a peer frame already advanced the state legitimately
+		return // a peer frame, leave, snapshot or promotion already wrote state
 	}
 	s.restoreLocked(prev)
 	s.mu.Unlock()
@@ -258,13 +363,7 @@ func (s *Service) rollback(prev stateSnapshot, gen uint64) {
 func cloneRing(r game.Ring) game.Ring {
 	r.Seats = append([]wire.ParticipantID(nil), r.Seats...)
 	r.Gone = append([]bool(nil), r.Gone...)
-	if r.Departed != nil {
-		m := make(map[wire.ParticipantID]bool, len(r.Departed))
-		for k, v := range r.Departed {
-			m[k] = v
-		}
-		r.Departed = m
-	}
+	r.Departed = nil // monotone fact set: snapshotted and restored by nobody
 	return r
 }
 
@@ -300,9 +399,9 @@ func (s *Service) hostOpen() error {
 	if len(s.claimed) == 0 {
 		s.claimed = []wire.ParticipantID{s.Ctx().Self}
 	}
+	s.claimed = removeDeparted(s.claimed, s.ring.Departed)
 	seats := idsToU32(s.claimed)
-	s.gen++
-	gen := s.gen
+	gen := s.writeLocked(prev)
 	s.mu.Unlock()
 	return s.broadcastWithRollback(kindOpen, seats, prev, gen)
 }
@@ -328,13 +427,21 @@ func (s *Service) hostClaim(id wire.ParticipantID) error {
 		s.mu.Unlock()
 		return errNotLobby
 	}
-	prev := s.saveLocked()
-	if len(s.claimed) < MaxSeats && !containsID(s.claimed, id) {
-		s.claimed = append(s.claimed, id)
+	// A claim that changes nothing must be a complete no-op: no snapshot, no gen
+	// bump, no broadcast. Otherwise a redundant claim (a double-clicked seat, a
+	// retried request, or this end already being seated) bumps gen while another
+	// goroutine's broadcast is in flight, and that broadcast's rollback then
+	// declines to run because it thinks a peer wrote state. A spurious gen bump
+	// suppresses a rollback that was needed, which is just as bad as the missing
+	// bump this whole protocol exists to prevent.
+	if len(s.claimed) >= MaxSeats || containsID(s.claimed, id) {
+		s.mu.Unlock()
+		return nil
 	}
+	prev := s.saveLocked()
+	s.claimed = append(s.claimed, id)
 	seats := idsToU32(s.claimed)
-	s.gen++
-	gen := s.gen
+	gen := s.writeLocked(prev)
 	s.mu.Unlock()
 	return s.broadcastWithRollback(kindSeats, seats, prev, gen)
 }
@@ -345,11 +452,16 @@ func (s *Service) hostRelease(id wire.ParticipantID) error {
 		s.mu.Unlock()
 		return errNotLobby
 	}
+	// Same rule as hostClaim: releasing a seat this end does not hold changes
+	// nothing, so it must not bump gen or put a redundant frame on the wire.
+	if !containsID(s.claimed, id) {
+		s.mu.Unlock()
+		return nil
+	}
 	prev := s.saveLocked()
 	s.claimed = removeID(s.claimed, id)
 	seats := idsToU32(s.claimed)
-	s.gen++
-	gen := s.gen
+	gen := s.writeLocked(prev)
 	s.mu.Unlock()
 	return s.broadcastWithRollback(kindSeats, seats, prev, gen)
 }
@@ -369,14 +481,25 @@ func (s *Service) Begin() error {
 		return errTooFew
 	}
 	prev := s.saveLocked()
-	seats := append([]wire.ParticipantID(nil), s.claimed...)
+	// Nobody who has left the session may be installed as a live seat. The lobby
+	// list is pruned on every leave, so this only matters for a leave that raced
+	// the list itself — exactly the case that used to hand the new host a seat
+	// list naming the departed host, with the opening turn pointed at it.
+	seats := removeDeparted(s.claimed, s.ring.Departed)
+	if len(seats) < 2 {
+		s.mu.Unlock()
+		return errTooFew
+	}
+	// Keep the lobby list identical to what is being installed and broadcast, so
+	// this end cannot keep naming a departed claimant the peers never learned
+	// about.
+	s.claimed = append([]wire.ParticipantID(nil), seats...)
 	turn := s.ring.Games % len(seats)
 	s.ring.SetSeats(seats, turn)
 	s.ring.Games++
 	s.resetLocked()
 	s.applyDepartedLocked()
-	s.gen++
-	gen := s.gen
+	gen := s.writeLocked(prev)
 	s.mu.Unlock()
 
 	body, err := wire.Marshal(msg{Kind: kindNewGame, Seats: idsToU32(seats), Turn: uint8(turn)})
@@ -420,8 +543,7 @@ func (s *Service) Place(row, col int8) error {
 		return err
 	}
 	hash := s.applyAndHashLocked()
-	s.gen++
-	gen := s.gen
+	gen := s.writeLocked(prev)
 	s.mu.Unlock()
 
 	body, err := wire.Marshal(msg{Kind: kindPlace, Row: row, Col: col, StateHash: hash})
@@ -461,8 +583,7 @@ func (s *Service) Resign() error {
 	if over {
 		s.endLocked(winnerSeat)
 	}
-	s.gen++
-	gen := s.gen
+	gen := s.writeLocked(prev)
 	s.mu.Unlock()
 
 	body, err := wire.Marshal(msg{Kind: kindResign})
@@ -513,14 +634,32 @@ func (s *Service) HandleFrame(from wire.ParticipantID, body []byte) error {
 	return fmt.Errorf("gomokup: unknown message kind %d", m.Kind)
 }
 
+// --- inbound frames ----------------------------------------------------------
+//
+// Every handler below writes state from the mux goroutine, interleaved with the
+// UI goroutine's local actions. They share one rollback protocol, so each one
+// takes a snapshot, mutates, and calls writeLocked before releasing the lock —
+// otherwise a local broadcast that is in flight on the other goroutine could
+// roll the peer's write away. Handlers that change nothing still emit state
+// (the UI may be waiting on it) but do not bump gen.
+
 func (s *Service) handleNewGame(from wire.ParticipantID, m msg) error {
 	if from != s.Ctx().HostID {
 		return fmt.Errorf("gomokup: new game from non-host %d", from)
 	}
 	s.mu.Lock()
+	prev := s.saveLocked()
+	// The host's seat list can still name a player whose leave reached this end
+	// first (the relay orders frames per sender only). The seats are installed
+	// verbatim — seat index IS the colour and decides whose turn it is, so
+	// dropping an entry here would renumber every seat after it and diverge from
+	// the host. Instead applyDepartedLocked marks the departed seats Gone right
+	// after, which is what makes a raced newGame unable to put someone who has
+	// left back into play.
 	s.ring.SetSeats(u32ToIDs(m.Seats), int(m.Turn))
 	s.resetLocked()
 	s.applyDepartedLocked()
+	s.writeLocked(prev)
 	s.mu.Unlock()
 	s.emitState()
 	return nil
@@ -531,10 +670,12 @@ func (s *Service) handleOpen(from wire.ParticipantID, m msg) error {
 		return nil
 	}
 	s.mu.Lock()
+	prev := s.saveLocked()
 	s.clearBoardLocked()
 	s.ph = game.Idle
 	s.lobby = true
-	s.claimed = u32ToIDs(m.Seats)
+	s.claimed = removeDeparted(u32ToIDs(m.Seats), s.ring.Departed)
+	s.writeLocked(prev)
 	s.mu.Unlock()
 	s.emitState()
 	return nil
@@ -545,7 +686,9 @@ func (s *Service) handleSeats(from wire.ParticipantID, m msg) error {
 		return nil
 	}
 	s.mu.Lock()
-	s.claimed = u32ToIDs(m.Seats)
+	prev := s.saveLocked()
+	s.claimed = removeDeparted(u32ToIDs(m.Seats), s.ring.Departed)
+	s.writeLocked(prev)
 	s.mu.Unlock()
 	s.emitState()
 	return nil
@@ -558,6 +701,7 @@ func (s *Service) handlePlace(from wire.ParticipantID, m msg) error {
 		s.mu.Unlock()
 		return err
 	}
+	prev := s.saveLocked()
 	if _, err := s.placeLocked(seat, m.Row, m.Col); err != nil {
 		s.mu.Unlock()
 		return err
@@ -567,6 +711,7 @@ func (s *Service) handlePlace(from wire.ParticipantID, m msg) error {
 	if !ok {
 		s.ph = game.Over
 	}
+	s.writeLocked(prev)
 	s.mu.Unlock()
 	if !ok {
 		return errors.New("gomokup: position hash mismatch")
@@ -581,10 +726,12 @@ func (s *Service) handleResign(from wire.ParticipantID) error {
 		s.mu.Unlock()
 		return nil
 	}
+	prev := s.saveLocked()
 	winnerSeat, over := s.ring.Concede(from)
 	if over {
 		s.endLocked(winnerSeat)
 	}
+	s.writeLocked(prev)
 	s.mu.Unlock()
 	s.emitState()
 	return nil
@@ -614,6 +761,13 @@ func (s *Service) Snapshot() ([]byte, error) {
 	})
 }
 
+// Restore installs a late joiner's catch-up snapshot.
+//
+// The snapshot is a peer's view, captured at some earlier instant, and a session
+// leave this end already saw has no ordering relationship with it — the leave can
+// arrive first. So the entire restore is filtered through ring.Departed: a
+// departed player is never written back into the lobby list, never installed as a
+// live seat, and never left holding the turn (see applyDepartedLocked).
 func (s *Service) Restore(blob []byte) error {
 	snap, err := wire.Body[snapshot](blob)
 	if err != nil {
@@ -624,15 +778,20 @@ func (s *Service) Restore(blob []byte) error {
 		s.mu.Unlock()
 		return nil
 	}
-	s.claimed = u32ToIDs(snap.Claimed)
+	prev := s.saveLocked()
+	s.claimed = removeDeparted(u32ToIDs(snap.Claimed), s.ring.Departed)
 	if snap.Lobby {
 		s.lobby = true
 		s.ph = game.Idle
+		s.writeLocked(prev)
 		s.mu.Unlock()
 		s.emitState()
 		return nil
 	}
 	s.board = snap.Board
+	// Seats are installed verbatim for the same reason as handleNewGame (seat
+	// index is the colour and the turn); applyDepartedLocked below marks any
+	// departed seat Gone instead of renumbering the ring.
 	s.ring.SetSeats(u32ToIDs(snap.Seats), int(snap.Turn))
 	if len(snap.Gone) == len(s.ring.Gone) {
 		copy(s.ring.Gone, snap.Gone)
@@ -643,6 +802,7 @@ func (s *Service) Restore(blob []byte) error {
 	s.last = snap.Last
 	s.history = snap.History
 	s.applyDepartedLocked()
+	s.writeLocked(prev)
 	s.mu.Unlock()
 	s.emitState()
 	return nil
@@ -831,4 +991,18 @@ func removeID(ids []wire.ParticipantID, id wire.ParticipantID) []wire.Participan
 		}
 	}
 	return ids
+}
+
+// removeDeparted drops every participant already known to have left the session.
+// It always returns a fresh slice: the input is frequently s.claimed itself, and
+// removeID's in-place compaction would otherwise mutate the caller's list (and,
+// through a shared backing array, an outstanding saveLocked snapshot of it).
+func removeDeparted(ids []wire.ParticipantID, departed map[wire.ParticipantID]bool) []wire.ParticipantID {
+	out := make([]wire.ParticipantID, 0, len(ids))
+	for _, id := range ids {
+		if !departed[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
