@@ -18,11 +18,13 @@ import (
 	"time"
 
 	"github.com/richardwooding/flyaffinity"
+	"github.com/richardwooding/kibitz/internal/clientip"
 	"github.com/richardwooding/kibitz/internal/dashboard"
 	"github.com/richardwooding/kibitz/internal/pushfwd"
 	"github.com/richardwooding/kibitz/web"
 	"github.com/richardwooding/parley/relay"
 	"github.com/richardwooding/parley/wire"
+	"golang.org/x/time/rate"
 )
 
 // clusterToken derives the internal peer-stats auth token from the dashboard
@@ -142,6 +144,10 @@ func main() {
 	listen := flag.String("listen", ":8080", "address to listen on")
 	maxSessions := flag.Int("max-sessions", 1000, "maximum concurrent sessions")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	// Comma-separated CIDRs whose X-Real-IP / X-Forwarded-For headers are
+	// believed. Loopback only by default, which is all a same-host nginx needs.
+	trustedProxiesFlag := flag.String("trusted-proxies", "127.0.0.0/8,::1/128",
+		"comma-separated CIDRs allowed to assert a client IP via forwarded headers")
 	flag.Parse()
 
 	if *showVersion {
@@ -181,9 +187,32 @@ func main() {
 		router = aff.Route
 		log.Printf("fly affinity routing enabled (machine %s, app %s)", mid, os.Getenv("FLY_APP_NAME"))
 	}
-	relaySrv := relay.New(relay.Options{MaxSessions: *maxSessions, Router: router})
+	relaySrv := relay.New(relay.Options{
+		MaxSessions: *maxSessions,
+		Router:      router,
+		// Per-client connection budget. parley's defaults (5/minute, burst 5)
+		// are tuned for the relay running directly on an edge network; behind
+		// the nginx reverse proxy used by this deployment every player shares
+		// the proxy's address, so the default turns into a site-wide budget and
+		// the sixth person to open the page gets 429. See internal/clientip for
+		// how the real client address is recovered, and the deployment notes for
+		// the matching nginx limit_req zone.
+		ConnRate:  rate.Every(2 * time.Second), // 30 connections/minute sustained
+		ConnBurst: 20,
+	})
 	defer relaySrv.Close()
-	mux.Handle("/ws", relaySrv)
+	// Rewrite RemoteAddr to the address nginx reports, but only for requests
+	// that actually arrived from a trusted proxy hop. Without this the relay's
+	// per-IP limiter buckets every player under 127.0.0.1 even with the limits
+	// above raised.
+	trustedProxies, err := clientip.ParseTrusted(*trustedProxiesFlag)
+	if err != nil {
+		log.Fatalf("trusted proxies: %v", err)
+	}
+	if len(trustedProxies.Trusted) == 0 {
+		trustedProxies = clientip.DefaultConfig()
+	}
+	mux.Handle("/ws", trustedProxies.Handler(relaySrv))
 	mux.HandleFunc("/whoami", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = fmt.Fprintf(w, "%s %s\n", os.Getenv("FLY_MACHINE_ID"), os.Getenv("FLY_REGION"))
