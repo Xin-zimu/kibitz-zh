@@ -113,6 +113,15 @@ type Service struct {
 	draw    bool
 	last    int16
 	history []string
+
+	// gen counts state mutations. A local action mutates before it broadcasts,
+	// so a failed broadcast would leave this end ahead of every peer and the
+	// both-sides-validate hash check would then reject every later move
+	// (unrecoverable without a rejoin). Callers therefore snapshot the state,
+	// capture gen after mutating, and roll back on send failure — but only if
+	// gen is unchanged, i.e. no peer frame landed in between and moved the
+	// state on legitimately.
+	gen uint64
 }
 
 func New() *Service { return &Service{ring: game.NewRing(MaxSeats)} }
@@ -136,9 +145,24 @@ func (s *Service) MemberKeyed(wire.ParticipantID, session.Role) {}
 func (s *Service) MemberLeft(id wire.ParticipantID) {
 	s.mu.Lock()
 	host := s.Ctx().Host
-	if host {
-		s.claimed = removeID(s.claimed, id)
-	}
+	// Prune the departed participant from the lobby list on EVERY end, not only
+	// on the current host.
+	//
+	// parley dispatches session.MemberLeft to every service BEFORE it promotes a
+	// successor (mux.dispatch calls observeMembers, and only afterwards
+	// maybeMigrate). So on the survivor that is about to become host, this runs
+	// while Ctx().Host is still false. Gating the prune on `host` therefore left
+	// the DEPARTED HOST in `claimed`; the promoted host then began a game whose
+	// seats still named a participant that had already left, which
+	// applyDepartedLocked immediately resolved as abandoned (or, with two
+	// seats, as a phantom walkover win) — and because OnPromote also zeroes
+	// ring.Games, the opening turn pointed at that dead seat. The promoted host
+	// could never start a real game again.
+	//
+	// Pruning unconditionally is safe: `claimed` is a mirror of the host's
+	// authoritative list, and every end receives the same MemberLeft for the
+	// same participant, so all ends converge without needing a broadcast.
+	s.claimed = removeID(s.claimed, id)
 	winnerSeat, over := s.ring.NoteLeft(id, s.ph)
 	if over {
 		s.endLocked(winnerSeat)
@@ -153,6 +177,102 @@ func (s *Service) MemberLeft(id wire.ParticipantID) {
 	case host && inLobby:
 		_ = s.broadcastSeats(seats) // a claimant left the lobby → free the seat everywhere
 	}
+}
+
+// --- broadcast rollback ------------------------------------------------------
+//
+// Every mutating local action follows the same shape:
+//
+//	s.mu.Lock(); prev := s.saveLocked(); ...mutate...; gen := s.gen; s.mu.Unlock()
+//	body, err := wire.Marshal(...)             // pre-lock, cheap
+//	if err := s.Ctx().Send.Broadcast(...); err != nil { s.rollback(prev, gen); ... }
+//
+// The mutex is deliberately NOT held across Broadcast: a WebSocket write can
+// block (parley writes with context.Background(), so there is no send timeout),
+// and holding s.mu there would wedge the mux goroutine and every peer frame
+// behind it.
+//
+// gen guards the rollback: if a peer frame landed while we were broadcasting, it
+// has already moved the state forward legitimately, and restoring an older
+// snapshot would clobber it. In that case we keep the newer state and report the
+// send error only.
+
+// stateSnapshot is a value copy of everything a local action can mutate. Board
+// is a fixed-size array so this allocation is cheap and cannot alias.
+type stateSnapshot struct {
+	ring    game.Ring
+	lobby   bool
+	claimed []wire.ParticipantID
+	board   Board
+	ph      game.Phase
+	winner  int8
+	draw    bool
+	last    int16
+	history []string
+}
+
+// saveLocked copies the mutable state. Caller holds s.mu.
+func (s *Service) saveLocked() stateSnapshot {
+	return stateSnapshot{
+		// Ring's slices are replaced (never mutated in place) by SetSeats/
+		// ApplyDeparted, except Gone which IS mutated in place by markGone, so
+		// clone the mutable parts explicitly.
+		ring:    cloneRing(s.ring),
+		lobby:   s.lobby,
+		claimed: append([]wire.ParticipantID(nil), s.claimed...),
+		board:   s.board,
+		ph:      s.ph,
+		winner:  s.winner,
+		draw:    s.draw,
+		last:    s.last,
+		history: cloneHistory(s.history),
+	}
+}
+
+// restoreLocked puts a snapshot back. Caller holds s.mu.
+func (s *Service) restoreLocked(prev stateSnapshot) {
+	s.ring = cloneRing(prev.ring)
+	s.lobby = prev.lobby
+	s.claimed = append([]wire.ParticipantID(nil), prev.claimed...)
+	s.board = prev.board
+	s.ph = prev.ph
+	s.winner = prev.winner
+	s.draw = prev.draw
+	s.last = prev.last
+	s.history = cloneHistory(prev.history)
+}
+
+// rollback undoes a local mutation whose broadcast failed, unless a peer frame
+// landed meanwhile (gen changed) — in which case the newer state wins.
+func (s *Service) rollback(prev stateSnapshot, gen uint64) {
+	s.mu.Lock()
+	if s.gen != gen {
+		s.mu.Unlock()
+		return // a peer frame already advanced the state legitimately
+	}
+	s.restoreLocked(prev)
+	s.mu.Unlock()
+	s.emitState() // the UI must not keep showing a move that never left
+}
+
+func cloneRing(r game.Ring) game.Ring {
+	r.Seats = append([]wire.ParticipantID(nil), r.Seats...)
+	r.Gone = append([]bool(nil), r.Gone...)
+	if r.Departed != nil {
+		m := make(map[wire.ParticipantID]bool, len(r.Departed))
+		for k, v := range r.Departed {
+			m[k] = v
+		}
+		r.Departed = m
+	}
+	return r
+}
+
+func cloneHistory(h []string) []string {
+	if h == nil {
+		return nil
+	}
+	return append([]string(nil), h...)
 }
 
 // --- lobby: open / seat / begin ---------------------------------------------
@@ -173,6 +293,7 @@ func (s *Service) hostOpen() error {
 		s.mu.Unlock()
 		return errInProgress
 	}
+	prev := s.saveLocked()
 	s.clearBoardLocked()
 	s.ph = game.Idle
 	s.lobby = true
@@ -180,8 +301,10 @@ func (s *Service) hostOpen() error {
 		s.claimed = []wire.ParticipantID{s.Ctx().Self}
 	}
 	seats := idsToU32(s.claimed)
+	s.gen++
+	gen := s.gen
 	s.mu.Unlock()
-	return s.broadcast(kindOpen, seats)
+	return s.broadcastWithRollback(kindOpen, seats, prev, gen)
 }
 
 // TakeSeat / LeaveSeat claim or release this end's seat in the open lobby.
@@ -205,12 +328,15 @@ func (s *Service) hostClaim(id wire.ParticipantID) error {
 		s.mu.Unlock()
 		return errNotLobby
 	}
+	prev := s.saveLocked()
 	if len(s.claimed) < MaxSeats && !containsID(s.claimed, id) {
 		s.claimed = append(s.claimed, id)
 	}
 	seats := idsToU32(s.claimed)
+	s.gen++
+	gen := s.gen
 	s.mu.Unlock()
-	return s.broadcastSeats(seats)
+	return s.broadcastWithRollback(kindSeats, seats, prev, gen)
 }
 
 func (s *Service) hostRelease(id wire.ParticipantID) error {
@@ -219,13 +345,19 @@ func (s *Service) hostRelease(id wire.ParticipantID) error {
 		s.mu.Unlock()
 		return errNotLobby
 	}
+	prev := s.saveLocked()
 	s.claimed = removeID(s.claimed, id)
 	seats := idsToU32(s.claimed)
+	s.gen++
+	gen := s.gen
 	s.mu.Unlock()
-	return s.broadcastSeats(seats)
+	return s.broadcastWithRollback(kindSeats, seats, prev, gen)
 }
 
 // Begin starts play from the claimed seats (host only, ≥2 seated).
+//
+// Seats are installed locally then broadcast, so a failed broadcast is rolled
+// back — otherwise this end would sit in a game no peer ever learned about.
 func (s *Service) Begin() error {
 	s.mu.Lock()
 	if !s.Ctx().Host {
@@ -236,19 +368,24 @@ func (s *Service) Begin() error {
 		s.mu.Unlock()
 		return errTooFew
 	}
+	prev := s.saveLocked()
 	seats := append([]wire.ParticipantID(nil), s.claimed...)
 	turn := s.ring.Games % len(seats)
 	s.ring.SetSeats(seats, turn)
 	s.ring.Games++
 	s.resetLocked()
 	s.applyDepartedLocked()
+	s.gen++
+	gen := s.gen
 	s.mu.Unlock()
 
 	body, err := wire.Marshal(msg{Kind: kindNewGame, Seats: idsToU32(seats), Turn: uint8(turn)})
 	if err != nil {
+		s.rollback(prev, gen)
 		return err
 	}
 	if err := s.Ctx().Send.Broadcast(ID, body); err != nil {
+		s.rollback(prev, gen)
 		return err
 	}
 	s.emitState()
@@ -266,6 +403,10 @@ func (s *Service) notePlaceLocked(seat int, row, col int8) {
 }
 
 // Place plays the local player's stone at (row, col).
+//
+// The move is applied locally BEFORE broadcasting (peers only advance when the
+// frame arrives), so a failed broadcast is rolled back rather than left to
+// desync the game — see the broadcast rollback block.
 func (s *Service) Place(row, col int8) error {
 	s.mu.Lock()
 	seat, err := s.checkTurnLocked(s.Ctx().Self)
@@ -273,18 +414,23 @@ func (s *Service) Place(row, col int8) error {
 		s.mu.Unlock()
 		return err
 	}
+	prev := s.saveLocked()
 	if _, err := s.placeLocked(seat, row, col); err != nil {
 		s.mu.Unlock()
 		return err
 	}
 	hash := s.applyAndHashLocked()
+	s.gen++
+	gen := s.gen
 	s.mu.Unlock()
 
 	body, err := wire.Marshal(msg{Kind: kindPlace, Row: row, Col: col, StateHash: hash})
 	if err != nil {
+		s.rollback(prev, gen)
 		return err
 	}
 	if err := s.Ctx().Send.Broadcast(ID, body); err != nil {
+		s.rollback(prev, gen)
 		return err
 	}
 	s.emitState()
@@ -303,24 +449,29 @@ func (s *Service) placeLocked(seat int, row, col int8) (int16, error) {
 }
 
 // Resign forfeits the local player's seat; the game ends (sole survivor wins,
-// otherwise abandoned).
+// otherwise abandoned). Rolled back if the broadcast fails.
 func (s *Service) Resign() error {
 	s.mu.Lock()
 	if _, seated := s.ring.SideOf(s.Ctx().Self); !seated || s.ph != game.Playing {
 		s.mu.Unlock()
 		return ErrNoResign
 	}
+	prev := s.saveLocked()
 	winnerSeat, over := s.ring.Concede(s.Ctx().Self)
 	if over {
 		s.endLocked(winnerSeat)
 	}
+	s.gen++
+	gen := s.gen
 	s.mu.Unlock()
 
 	body, err := wire.Marshal(msg{Kind: kindResign})
 	if err != nil {
+		s.rollback(prev, gen)
 		return err
 	}
 	if err := s.Ctx().Send.Broadcast(ID, body); err != nil {
+		s.rollback(prev, gen)
 		return err
 	}
 	s.emitState()
@@ -629,6 +780,22 @@ func (s *Service) broadcast(kind uint8, seats []uint32) error {
 		return err
 	}
 	if err := s.Ctx().Send.Broadcast(ID, body); err != nil {
+		return err
+	}
+	s.emitState()
+	return nil
+}
+
+// broadcastWithRollback sends a lobby seat list and restores `prev` if the send
+// fails, so the host's claimed list cannot drift ahead of what joiners were told.
+func (s *Service) broadcastWithRollback(kind uint8, seats []uint32, prev stateSnapshot, gen uint64) error {
+	body, err := wire.Marshal(msg{Kind: kind, Seats: seats})
+	if err != nil {
+		s.rollback(prev, gen)
+		return err
+	}
+	if err := s.Ctx().Send.Broadcast(ID, body); err != nil {
+		s.rollback(prev, gen)
 		return err
 	}
 	s.emitState()
