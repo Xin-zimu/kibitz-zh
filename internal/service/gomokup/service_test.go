@@ -32,11 +32,41 @@ func newGameFrame(t *testing.T, seats []uint32, turn uint8) []byte {
 
 // A session leave has no cross-sender ordering against the host's newGame
 // broadcast, so it can arrive first — while this end still has no ring to
-// mark. The seat list that then lands still names the departed player; the
-// game must end as abandoned immediately, not sit live forever.
-func TestNewGameAfterLeaveEndsAbandoned(t *testing.T) {
+// mark. The seat list that then lands still names the departed player.
+//
+// Since Gomoku Party now keeps playing when an off-turn player leaves, the game
+// must be LIVE with the departed seat marked Gone (and the remaining players
+// able to finish), rather than either hanging or being killed outright.
+func TestNewGameAfterLeaveMarksGoneAndContinues(t *testing.T) {
 	s := attachJoiner(t, 2, 1)
 	s.MemberLeft(3) // overtook the newGame below
+	if err := s.HandleFrame(1, newGameFrame(t, []uint32{1, 2, 3}, 0)); err != nil {
+		t.Fatal(err)
+	}
+	st := s.State()
+	if st.Outcome != "" {
+		t.Fatalf("outcome=%q, want a live game (departed seat 2 was not on turn)", st.Outcome)
+	}
+	if !st.Playing {
+		t.Fatal("game should be playing")
+	}
+	if !st.Gone[2] {
+		t.Fatalf("gone=%v, want departed seat 2 marked", st.Gone)
+	}
+	if st.Gone[0] || st.Gone[1] {
+		t.Fatalf("gone=%v, want only seat 2 marked", st.Gone)
+	}
+	if st.TurnID != 1 {
+		t.Fatalf("turnID=%d, want seat 0 (opening turn unchanged)", st.TurnID)
+	}
+}
+
+// A leave that beats a newGame in which the departed player OWNS the opening
+// turn has no order-independent resolution, so the game ends immediately
+// instead of sitting live with the turn on an empty seat.
+func TestNewGameAfterLeaveEndsWhenTurnHolderGone(t *testing.T) {
+	s := attachJoiner(t, 2, 1)
+	s.MemberLeft(1) // seat 0, the opening turn holder
 	if err := s.HandleFrame(1, newGameFrame(t, []uint32{1, 2, 3}, 0)); err != nil {
 		t.Fatal(err)
 	}
@@ -44,8 +74,8 @@ func TestNewGameAfterLeaveEndsAbandoned(t *testing.T) {
 	if st.Outcome != "abandoned" || st.WinnerID != 0 {
 		t.Fatalf("outcome=%q winner=%d, want abandoned/0", st.Outcome, st.WinnerID)
 	}
-	if !st.Gone[2] {
-		t.Fatalf("gone=%v, want departed seat 2 marked", st.Gone)
+	if !st.Gone[0] {
+		t.Fatalf("gone=%v, want departed seat 0 marked", st.Gone)
 	}
 }
 
@@ -64,8 +94,9 @@ func TestNewGameAfterLeaveSoleSurvivorWins(t *testing.T) {
 }
 
 // The same race via snapshot: a late joiner restores a Playing snapshot that
-// was captured before the host processed the leave.
-func TestRestoreAfterLeaveEndsAbandoned(t *testing.T) {
+// was captured before the host processed the leave. The departed seat must be
+// marked Gone on the late joiner too, so its board agrees with everyone else.
+func TestRestoreAfterLeaveMarksGone(t *testing.T) {
 	host := attachJoiner(t, 1, 1)
 	if err := host.HandleFrame(1, newGameFrame(t, []uint32{1, 2, 3}, 0)); err != nil {
 		t.Fatal(err)
@@ -81,7 +112,13 @@ func TestRestoreAfterLeaveEndsAbandoned(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := late.State()
-	if st.Outcome != "abandoned" {
-		t.Fatalf("outcome=%q, want abandoned", st.Outcome)
+	if !st.Playing {
+		t.Fatal("late joiner should be in a live game")
+	}
+	if !st.Gone[2] {
+		t.Fatalf("gone=%v, want departed seat 2 marked after restore", st.Gone)
+	}
+	if st.Outcome != "" {
+		t.Fatalf("outcome=%q, want live (off-turn leaver)", st.Outcome)
 	}
 }
