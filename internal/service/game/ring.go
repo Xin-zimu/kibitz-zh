@@ -152,27 +152,51 @@ func (r *Ring) Concede(id wire.ParticipantID) (int, bool) {
 
 // markGone marks the seat Gone and reports whether the game must end.
 //
-// The decision is deliberately conservative, because the relay only orders
-// frames per sender: a leave and an in-flight move can be observed in different
-// orders on different ends, and any rule that makes the turn depend on that
-// order corrupts the game.
+// The rule is conservative — a leaver must never leave a live game whose turn
+// sits on a seat nobody occupies — but only ONE of its three branches is
+// genuinely order-independent, so state which is which precisely.
 //
-//   - Fewer than two active seats left: end. A sole survivor wins; with nobody
-//     left it is abandoned. This is order-independent — it depends only on the
-//     seat list and the departed set, which every end shares.
-//   - The leaver holds the turn: end as abandoned. Here there is NO
-//     order-independent answer. The leaver may have just broadcast a move, so
-//     one end can apply it (stone placed, turn advanced) while another handles
-//     the leave first, advances the turn past the dead seat, and then rejects
-//     that same move as not-your-turn. The two ends would disagree on the
-//     board. Ending in both orders keeps every end agreed on the outcome; only
-//     the cosmetic board of an already-finished game can differ.
-//   - Otherwise: play on with the remaining players. This is the case worth
-//     improving: the leaver was not on turn, so they could not legally have a
-//     move in flight (a move from them is refused as not-your-turn in BOTH
-//     orders), the leave touches no turn state, and every end converges. One
-//     player closing a tab in a 3- or 4-player game no longer kills it for the
-//     people still playing.
+//   - Fewer than two active seats left: END. A sole survivor wins; with nobody
+//     left the game is abandoned (winner -1).
+//     ORDER-INDEPENDENT: it reads no turn, no board and no history, so the
+//     answer is a pure function of the seat list and the departed set, and any
+//     two ends applying the same departures agree.
+//   - The leaver holds the CURRENT turn: END as abandoned (winner -1).
+//     NOT ORDER-INDEPENDENT, and nothing short of a rules change makes it so:
+//     the branch reads r.Turn, and r.Turn depends on whether an in-flight move
+//     has already been applied on this end. The same departed set can therefore
+//     yield different winners at different ends. Seats [1 2 3], seat 0 on turn,
+//     departures {1, 2} — note seat 0 is player 1:
+//     order (player 2, then player 1): the seat 1 leave leaves two active and
+//     the turn intact, so play on; then the seat 0 leave drops it to one active
+//     -> seat 2 (player 3) WINS.
+//     order (player 1, then player 2): seat 0 held the turn -> the game ENDS
+//     abandoned (winner -1) on the first leave; the seat 1 leave then arrives
+//     with the phase already Over, so NoteLeft records the departure and
+//     returns before marking anything (Gone = [T F F]).
+//     Both outcomes are pinned by TestRingLeaveOrderDependenceIsPinned.
+//   - Otherwise: PLAY ON with the remaining players. The leaver was not on
+//     turn, so the leave touches no turn state. Any departed set that excludes
+//     the turn holder is fully order-independent — the turn branch can never
+//     fire, so only the pure ActiveCount branch decides — which
+//     TestRingLeaveOrderIndependenceHolds checks exhaustively for 3 and 4 seats.
+//     One player closing a tab in a 3- or 4-player game no longer kills it for
+//     the people still playing (upstream ended the game on ANY leave).
+//
+// Why the order-dependence is acceptable today: parley's relay hub is a single
+// goroutine — relay/hub.go run() serialises every join, leave and frame command
+// for a session — so all ends are fed the same membership events in the same
+// global order and cannot actually observe this branch diverging on a
+// single-node relay. Two things would turn it from theoretical to real: a
+// multi-node relay, where a session's events are not confined to one hub
+// (fly.toml can be scaled out and richardwooding/flyaffinity routes per
+// session, so that shape is reachable), or moving MemberLeft off the mux
+// goroutine so two memberships can be applied concurrently on one end.
+//
+// Making the rule genuinely order-independent — e.g. "a leaver who ever held
+// the turn always ends the game" — is a GAMEPLAY DECISION, not a refactor. Do
+// not do it in code without an explicit rules decision; see
+// docs/09-LEAVE-RULES-PROPOSAL.md.
 func (r *Ring) markGone(id wire.ParticipantID) (int, bool) {
 	seat, seated := r.SideOf(id)
 	if !seated || r.Gone[seat] {
@@ -184,6 +208,17 @@ func (r *Ring) markGone(id wire.ParticipantID) (int, bool) {
 
 // settle decides the outcome after seats were marked Gone. It must be called
 // with the Gone set already updated and must not itself mutate turn state.
+//
+// Only the ActiveCount branch is a pure function of the seat list and the
+// departed set, and so gives the same answer for every processing order of the
+// same departures. The turn-holder branch is NOT: it reads r.Turn, which can
+// differ between ends according to whether an in-flight move has already been
+// applied. And whichever branch fires first wins, so a departed set that would
+// reduce the game to one active seat can still be answered by either branch
+// depending on the order the seats go — seats [1 2 3] with seat 0 on turn and
+// departures {1, 2}: leaving player 2 first gives a sole survivor at seat 2,
+// leaving player 1 first abandons the game. markGone carries the full argument,
+// plus why a single-node relay keeps that divergence theoretical.
 func (r *Ring) settle() (int, bool) {
 	switch r.ActiveCount() {
 	case 0:
