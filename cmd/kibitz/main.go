@@ -142,7 +142,9 @@ func displayVersion() string {
 
 func main() {
 	listen := flag.String("listen", ":8080", "address to listen on")
-	maxSessions := flag.Int("max-sessions", 1000, "maximum concurrent sessions")
+	// Default comes from internal/relaycfg, the same source the relay is built
+	// from, so the flag cannot silently shadow the shipped cap.
+	maxSessions := flag.Int("max-sessions", relaycfg.MaxSessions, "maximum concurrent sessions")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	// Comma-separated CIDRs whose X-Real-IP / X-Forwarded-For headers are
 	// believed. Loopback only by default, which is all a same-host nginx needs.

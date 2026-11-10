@@ -579,10 +579,9 @@ func TestGenMonotonicAcrossRollbackAndRestore(t *testing.T) {
 		raceLive3(t, s, 0)
 		before := raceGen(s)
 
-		// A peer write lands mid-broadcast. rollback() decides by comparing gen, so
-		// that write MUST be visible in the counter — pre-fix MemberLeft did not bump
-		// it, the rollback went ahead anyway, and the leave plus the stone were both
-		// thrown away.
+		// A leave lands mid-broadcast. It does not bump gen (see
+		// TestMemberLeftIsReplayedNotBumped — a leave stays re-derivable so it can be
+		// replayed), so the rollback DOES run. What must survive is the departure.
 		sender.during = func() { s.MemberLeft(3) }
 		if err := s.Place(0, 0); err == nil {
 			t.Fatal("Place should report the broadcast failure")
@@ -592,19 +591,13 @@ func TestGenMonotonicAcrossRollbackAndRestore(t *testing.T) {
 			t.Fatalf("ROLLBACK REWOUND GEN: %d -> %d; the counter must live outside the snapshot",
 				before, after)
 		}
-		if after == before {
-			t.Fatalf("A PEER WRITE DURING THE BROADCAST DID NOT MOVE GEN (%d): the rollback then "+
-				"thinks nothing happened and restores over it", before)
-		}
-		// The newer state won: the rollback must have declined, so the move that did
-		// go out stays applied and the peer's departure is not undone.
 		st := s.State()
-		if st.Board[0] != 1 {
-			t.Fatalf("ROLLBACK RAN OVER A PEER WRITE: board[0]=%d, want 1 (gen moved, so the newer "+
-				"state must win)", st.Board[0])
+		if st.Board[0] != 0 {
+			t.Fatalf("the failed move survived: board[0]=%d, want 0", st.Board[0])
 		}
 		if len(st.Gone) != 3 || !st.Gone[2] {
-			t.Fatalf("ROLLBACK UNDID THE PEER'S DEPARTURE: gone=%v, want seat 2 Gone", st.Gone)
+			t.Fatalf("ROLLBACK UNDID THE PEER'S DEPARTURE: gone=%v, want seat 2 Gone replayed from "+
+				"ring.Departed", st.Gone)
 		}
 	})
 
@@ -627,6 +620,93 @@ func TestGenMonotonicAcrossRollbackAndRestore(t *testing.T) {
 				"catch-up would rewind the snapshot", before, after)
 		}
 	})
+}
+
+// --- I: a leave is replayed, not bumped -------------------------------------
+
+// MemberLeft is the one state path that must NOT bump gen.
+//
+// Bumping it looks consistent with every other write, and it is wrong: a leave's
+// meaning depends on the turn, and a local move that has been applied but not yet
+// broadcast advances the turn to a place no peer can see. Bumping gen would let
+// the failed broadcast's rollback decline and keep that private judgement.
+//
+// The fix is that a leave changes nothing which cannot be re-derived: Departed is
+// monotone, and its effects are recomputed by restoreLocked. So this end can roll
+// the move back and replay the leave against the state every peer still has.
+func TestMemberLeftIsReplayedNotBumped(t *testing.T) {
+	s := hostService(t, &raceSender{ok: true})
+	raceLive3(t, s, 0)
+
+	before := raceGen(s)
+	s.MemberLeft(3) // off-turn leaver; the game continues
+	after := raceGen(s)
+
+	if after != before {
+		t.Fatalf("MEMBERLEFT BUMPED GEN (%d -> %d): a leave must stay re-derivable so a rollback "+
+			"in flight can replay it against the state the peers have. Bumping it makes the "+
+			"rollback decline and keep a turn no peer can see.", before, after)
+	}
+	// It still changed the state — the non-bump is only about re-derivability.
+	if st := s.State(); len(st.Gone) != 3 || !st.Gone[2] {
+		t.Fatalf("MemberLeft did not mark the seat Gone: gone=%v", st.Gone)
+	}
+	s.mu.Lock()
+	dep := s.ring.Departed[3]
+	s.mu.Unlock()
+	if !dep {
+		t.Fatal("MemberLeft did not record the departure")
+	}
+}
+
+// The divergence this rule prevents, end to end.
+//
+// Self is seat 0 and places. The move advances the turn to seat 1 and the
+// broadcast FAILS, so no peer ever receives the stone. During the window, player 2
+// (seat 1) leaves.
+//
+//   - This end has already advanced the turn to seat 1, so it sees a TURN-HOLDER
+//     leave: ring ends the game abandoned, with the stone on the board.
+//   - Every peer never got the stone, so the turn is still seat 0: it sees an
+//     OFF-TURN leave and plays on with an empty board.
+//
+// Pre-fix this end's MemberLeft bumped gen, the rollback declined, and the two
+// ends disagreed on board, phase and turn — permanently. With the leave kept
+// re-derivable, the rollback runs and replays the departure against the state the
+// peers share, so both ends converge.
+func TestLeaveDuringFailedBroadcastDoesNotDiverge(t *testing.T) {
+	sender := &raceSender{} // every broadcast fails
+	self := hostService(t, sender)
+	raceLive3(t, self, 0)
+
+	// A peer end that receives the same membership event but never the stone.
+	peer := raceJoiner(2, &raceSender{ok: true})
+	raceLive3(t, peer, 0)
+
+	sender.during = func() { self.MemberLeft(2) }
+	peer.MemberLeft(2) // same event, delivered with the peer's own (unmoved) turn
+
+	if err := self.Place(0, 0); err == nil {
+		t.Fatal("Place should report the broadcast failure")
+	}
+
+	a, b := self.State(), peer.State()
+	if a.Playing != b.Playing || a.Outcome != b.Outcome || a.Board[0] != b.Board[0] {
+		t.Fatalf("ENDS DIVERGED FROM THE SAME EVENTS: this end {playing=%v outcome=%q board[0]=%d "+
+			"gone=%v turn=%d} vs peer {playing=%v outcome=%q board[0]=%d gone=%v turn=%d}. "+
+			"The move never reached the peer, so it must not decide the leave.",
+			a.Playing, a.Outcome, a.Board[0], a.Gone, a.TurnID,
+			b.Playing, b.Outcome, b.Board[0], b.Gone, b.TurnID)
+	}
+	if !a.Gone[1] || !b.Gone[1] {
+		t.Fatalf("the departure must be recorded on both ends: self gone=%v peer gone=%v", a.Gone, b.Gone)
+	}
+	self.mu.Lock()
+	dep := self.ring.Departed[2]
+	self.mu.Unlock()
+	if !dep {
+		t.Fatal("the departure was erased by the rollback")
+	}
 }
 
 // --- the gen table: every inbound write path must be visible to rollback ----
@@ -689,13 +769,6 @@ func TestGenInboundHandlersBumpOnChange(t *testing.T) {
 				if err := s.HandleFrame(2, raceResignFrame(t)); err != nil {
 					t.Fatal(err)
 				}
-			},
-		},
-		{
-			name:  "MemberLeft",
-			setup: func(t *testing.T, s *Service) { raceLive3(t, s, 0) },
-			act: func(t *testing.T, s *Service) {
-				s.MemberLeft(3) // off-turn leaver: seat 2 Gone, game continues
 			},
 		},
 	}

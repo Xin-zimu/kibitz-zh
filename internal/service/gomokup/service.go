@@ -191,7 +191,6 @@ func (s *Service) MemberLeft(id wire.ParticipantID) {
 	// Pruning unconditionally is safe: `claimed` is a mirror of the host's
 	// authoritative list, and every end receives the same MemberLeft for the
 	// same participant, so all ends converge without needing a broadcast.
-	prev := s.saveLocked()
 	s.claimed = removeID(s.claimed, id)
 	winnerSeat, over := s.ring.NoteLeft(id, s.ph)
 	if over {
@@ -201,11 +200,28 @@ func (s *Service) MemberLeft(id wire.ParticipantID) {
 	// participant whose leave this end already saw can never be listed as
 	// seated again by a stale list that arrived in between.
 	s.claimed = removeDeparted(s.claimed, s.ring.Departed)
-	// A leave is a state write: it prunes claimed, marks a seat Gone and can end
-	// the game. Bump gen so a broadcast that is in flight on another goroutine
-	// cannot roll any of that away (and see restoreLocked, which additionally
-	// refuses to forget the departure itself).
-	s.writeLocked(prev)
+	// NOT a gen-bumping write, unlike every other state path. Deliberately so.
+	//
+	// Everything a leave changes is re-derivable: the departure itself is monotone
+	// (ring.Departed is never snapshotted or restored), and its effects — the Gone
+	// mark, the pruned claimed list, and whether that ends the game — are
+	// recomputed from Departed by restoreLocked.
+	//
+	// That matters because a leave is the one event whose MEANING depends on state
+	// a peer may not have. A local move advances the turn before it is broadcast;
+	// if the broadcast then fails, the move never reached anybody, so this end is
+	// judging the leave against a turn no peer can see. Bumping gen here makes the
+	// rollback decline and keep that judgement, which is a real divergence:
+	// seats [1 2 3] with seat 0 on turn, self places (turn -> seat 1), player 2
+	// leaves during the failed broadcast. This end sees a TURN-HOLDER leave and
+	// ends the game abandoned with the stone on the board; every peer sees an
+	// OFF-TURN leave and plays on with an empty board. Board, phase and turn all
+	// disagree, from identical events.
+	//
+	// Not bumping lets the rollback run, and restoreLocked replays the departure
+	// against the state every peer still has — which is the only way both ends can
+	// reach the same answer. Pinned by TestMemberLeftIsReplayedNotBumped and
+	// TestLeaveDuringFailedBroadcastDoesNotDiverge.
 	inLobby := s.lobby
 	seats := idsToU32(s.claimed)
 	s.mu.Unlock()

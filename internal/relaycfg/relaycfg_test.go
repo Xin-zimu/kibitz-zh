@@ -83,6 +83,14 @@ func TestMaxSessionsPositive(t *testing.T) {
 	}
 }
 
+// cmd/kibitz's -max-sessions flag must take its DEFAULT from this constant, not
+// re-type the number. A literal there would shadow the constant: lowering
+// relaycfg.MaxSessions would change nothing for the binary while these tests
+// carried on passing — the same "the tested value is not the shipped value"
+// defect this package exists to remove. The flag's default is not reachable
+// from a test (package main), so pin it at the source instead: see the
+// flag.Int(..., relaycfg.MaxSessions, ...) call in cmd/kibitz/main.go.
+
 // Options() must project the constants without alteration. This is the exact
 // value cmd/kibitz hands to relay.New and the acceptance tests build their relay
 // from, so a mismatch would mean the tests exercise something the binary does
