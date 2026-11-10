@@ -81,16 +81,17 @@
     // ---- section builders ---------------------------------------------------
 
     function statusText() {
-      if (over()) return g.outcome || "Game over";
-      if (g.phase === "shuffling") return "Shuffling the deck…";
-      if (g.phase === "showdown") return "Showdown…";
-      if (!isPlayer()) return "Kibitzing…";
+      if (over()) return window.TO(g.outcome) || window.T("gin.gameOver","Game over");
+      if (g.phase === "shuffling") return window.T("gin.shuffling","Shuffling the deck…");
+      if (g.phase === "showdown") return window.T("gin.showdown","Showdown…");
+      if (!isPlayer()) return window.T("table.kibitzingEllipsis","Kibitzing…");
       if (g.phase === "upcard-offer") {
-        return myTurn() ? "Your turn — take the upcard or pass" : "Opponent deciding on the opening upcard…";
+        return myTurn() ? window.T("gin.upcardYou","Your turn — take the upcard or pass")
+                        : window.T("gin.upcardThem","Opponent deciding on the opening upcard…");
       }
-      if (myTurn() && g.phase === "draw") return "Your turn — draw a card";
-      if (myTurn() && g.phase === "discard") return `Your turn — discard (deadwood ${g.deadwood})`;
-      return "Waiting for opponent…";
+      if (myTurn() && g.phase === "draw") return window.T("gin.drawCard","Your turn — draw a card");
+      if (myTurn() && g.phase === "discard") return window.T("gin.discard","Your turn — discard (deadwood {n})").replace("{n}", g.deadwood);
+      return window.T("gin.waitingOpp","Waiting for opponent…");
     }
 
     function renderScores() {
@@ -100,16 +101,17 @@
 
     function dealerLabel() {
       if (!g.dealerId) return "";
-      if (mySeat() < 0) return `${ctx.name(g.dealerId)} deals`;
-      return g.dealerId === ctx.self() ? "your deal" : `${oppName()}'s deal`;
+      if (mySeat() < 0) return window.T("gin.deals","{name} deals").replace("{name}", ctx.name(g.dealerId));
+      return g.dealerId === ctx.self() ? window.T("gin.yourDeal","your deal")
+                                       : window.T("gin.theirDeal","{name}'s deal").replace("{name}", oppName());
     }
 
     function matchNote() {
-      const parts = [`first to ${g.matchTarget || 100}`];
+      const parts = [window.T("gin.firstTo","first to {n}").replace("{n}", g.matchTarget || 100)];
       const hw = g.handsWon || [0, 0];
       if (hw[0] || hw[1]) {
         const me = mySeat() < 0 ? 0 : mySeat();
-        parts.push(`boxes ${hw[me]}–${hw[1 - me]}`);
+        parts.push(window.T("gin.boxes","boxes {a}–{b}").replace("{a}", hw[me]).replace("{b}", hw[1 - me]));
       }
       const d = dealerLabel();
       if (d) parts.push(d);
@@ -119,12 +121,12 @@
     function offerRow() {
       const row = div("gin-piles");
       const wrap = div("gin-pile");
-      wrap.appendChild(label("Upcard"));
+      wrap.appendChild(label(window.T("gin.upcard","Upcard")));
       const top = g.discard.length ? g.discard[g.discard.length - 1] : -1;
-      wrap.appendChild(top >= 0 ? cardNode(top, {}) : note("(empty)"));
+      wrap.appendChild(top >= 0 ? cardNode(top, {}) : note(window.T("gin.empty","(empty)")));
       if (canOffer()) {
-        wrap.appendChild(button(`Take ${cardLabel(top)}`, () => send({ type: "gin.takeUpcardOffer" })));
-        wrap.appendChild(button("Pass", () => send({ type: "gin.passUpcard" })));
+        wrap.appendChild(button(window.T("gin.take","Take {card}").replace("{card}", cardLabel(top)), () => send({ type: "gin.takeUpcardOffer" })));
+        wrap.appendChild(button(window.T("gin.pass","Pass"), () => send({ type: "gin.passUpcard" })));
       }
       row.appendChild(wrap);
       return row;
@@ -135,25 +137,25 @@
       if (mySeat() < 0) {
         row.textContent = `${ctx.name(g.p1Id)}: ${g.handCounts[0]} · ${ctx.name(g.p2Id)}: ${g.handCounts[1]}`;
       } else {
-        row.textContent = `${oppName()}: ${g.handCounts[1 - mySeat()]} cards`;
+        row.textContent = window.T("gin.oppCards","{name}: {n} cards").replace("{name}", oppName()).replace("{n}", g.handCounts[1 - mySeat()]);
       }
       return row;
     }
 
     function stockPile() {
       const wrap = div("gin-pile");
-      wrap.append(label(`Stock (${g.stockCount})`), cardBack());
-      if (canDraw()) wrap.appendChild(button("Draw stock", () => send({ type: "gin.drawStock" })));
+      wrap.append(label(window.T("gin.stock","Stock ({n})").replace("{n}", g.stockCount)), cardBack());
+      if (canDraw()) wrap.appendChild(button(window.T("gin.drawStock","Draw stock"), () => send({ type: "gin.drawStock" })));
       return wrap;
     }
 
     function discardPile() {
       const wrap = div("gin-pile");
-      wrap.appendChild(label("Discard"));
+      wrap.appendChild(label(window.T("gin.discardPile","Discard")));
       const top = g.discard.length ? g.discard[g.discard.length - 1] : -1;
       const take = (top >= 0 && canTake()) ? () => send({ type: "gin.takeUpcard" }) : null;
       wrap.appendChild(top >= 0 ? cardNode(top, { onClick: take }) : note("(empty)"));
-      if (take) wrap.appendChild(button(`Take ${cardLabel(top)}`, take));
+      if (take) wrap.appendChild(button(window.T("gin.take","Take {card}").replace("{card}", cardLabel(top)), take));
       return wrap;
     }
 
@@ -182,12 +184,12 @@
     function controlsRow() {
       const row = div("gin-controls");
       if (!canDiscard()) return row;
-      row.appendChild(note(`Deadwood: ${g.deadwood}`));
-      const disc = button("Discard", doDiscard);
+      row.appendChild(note(window.T("gin.deadwood","Deadwood: {n}").replace("{n}", g.deadwood)));
+      const disc = button(window.T("gin.discardBtn","Discard"), doDiscard);
       disc.disabled = selected < 0;
       row.appendChild(disc);
       if (g.canKnock) {
-        const k = button("Knock", doKnock);
+        const k = button(window.T("gin.knock","Knock"), doKnock);
         k.disabled = selected < 0;
         row.appendChild(k);
       }
@@ -198,7 +200,7 @@
       const b = div("gin-verify " + (g.verified ? "ok" : "muted"));
       b.textContent = g.verified
         ? "✓ Provably fair — shuffle verified"
-        : "Shuffle proof unavailable";
+        : window.T("gin.proofUnavailable","Shuffle proof unavailable");
       return b;
     }
 
@@ -234,24 +236,25 @@
     }
 
     function renderBody(board) {
-      if (!g.playing) { board.appendChild(note("Waiting for the game to start…")); return; }
+      if (!g.playing) { board.appendChild(note(window.T("table.waitingStart","Waiting for the game to start…"))); return; }
       if (over()) { renderOver(board); return; }
-      if (g.phase === "shuffling") { board.appendChild(note("Shuffling the deck…")); return; }
-      if (g.phase === "showdown") { board.appendChild(note("Showdown…")); return; }
+      if (g.phase === "shuffling") { board.appendChild(note(window.T("gin.shuffling","Shuffling the deck…"))); return; }
+      if (g.phase === "showdown") { board.appendChild(note(window.T("gin.showdown","Showdown…"))); return; }
       if (g.phase === "upcard-offer") {
-        board.append(oppRow(), matchNote(), offerRow(), handSection("Your hand", g.hand, false));
+        board.append(oppRow(), matchNote(), offerRow(), handSection(window.T("gin.yourHand","Your hand"), g.hand, false));
         return;
       }
-      board.append(oppRow(), matchNote(), pilesRow(), handSection("Your hand", g.hand, canDiscard()), controlsRow());
+      board.append(oppRow(), matchNote(), pilesRow(), handSection(window.T("gin.yourHand","Your hand"), g.hand, canDiscard()), controlsRow());
     }
 
     function renderOver(board) {
       board.append(
-        handSection("Your hand", g.hand, false),
-        handSection(`${oppName()}'s hand`, g.oppHand, false),
+        handSection(window.T("gin.yourHand","Your hand"), g.hand, false),
+        handSection(window.T("gin.theirHand","{name}'s hand").replace("{name}", oppName()), g.oppHand, false),
         verifiedBadge(),
       );
-      board.appendChild(note(g.matchOver ? "Match over — rematch to start a new match." : "Hand over — rematch to deal the next hand."));
+      board.appendChild(note(g.matchOver ? window.T("gin.matchOver","Match over — rematch to start a new match.")
+                                          : window.T("gin.handOver","Hand over — rematch to deal the next hand.")));
     }
 
     // ---- fx -----------------------------------------------------------------

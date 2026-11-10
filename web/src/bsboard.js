@@ -79,9 +79,9 @@
     }
 
     function onPlaceCell(cell) {
-      if (!placing) { toast("Pick a ship to place first."); return; }
+      if (!placing) { toast(window.T("bs.pickShip","Pick a ship to place first.")); return; }
       const cells = footprint(placing, cell, orient);
-      if (!cells) { toast("Doesn't fit there — try Rotate or another cell."); return; }
+      if (!cells) { toast(window.T("bs.doesntFit","Doesn't fit there — try Rotate or another cell.")); return; }
       fleet = fleet.map((v) => (v === placing ? 0 : v)); // clear old placement
       for (const c of cells) fleet[c] = placing;
       // Advance to the next unplaced ship for a smooth flow.
@@ -135,7 +135,7 @@
       const playPane = $("bs-playing");
 
       if (!g.playing) {
-        statusEl.textContent = "Waiting for the game to start…";
+        statusEl.textContent = window.T("table.waitingStart","Waiting for the game to start…");
         placingPane.classList.add("hidden");
         playPane.classList.add("hidden");
         return;
@@ -143,7 +143,7 @@
 
       const side = mySide();
       if (g.phase === "placing" && isPlayer() && !g.committed[side]) {
-        statusEl.textContent = "Place your fleet — nobody can see it, and the commitment makes lying impossible.";
+        statusEl.textContent = window.T("bs.placeFleet","Place your fleet — nobody can see it, and the commitment makes lying impossible.");
         placingPane.classList.remove("hidden");
         playPane.classList.add("hidden");
         renderPlacement();
@@ -161,15 +161,15 @@
     // (placing-done / shooting / over), matching the phase-based branches.
     function playStatusText(side) {
       if (g.phase === "placing") {
-        return isPlayer() ? "Fleet locked in — waiting for your opponent…"
-          : "Players are placing their fleets…";
+        return isPlayer() ? window.T("bs.fleetLocked","Fleet locked in — waiting for your opponent…")
+          : window.T("bs.playersPlacing","Players are placing their fleets…");
       }
       if (g.phase === "shooting") {
-        return myTurn() ? "Your shot — click their waters"
-          : (isPlayer() ? "Incoming…" : "Kibitzing");
+        return myTurn() ? window.T("bs.yourShot","Your shot — click their waters")
+          : (isPlayer() ? window.T("bs.incoming","Incoming…") : window.T("table.kibitzing","Kibitzing"));
       }
       let s = outcomeLabel();
-      if (g.cheatBy) s += ` (participant ${g.cheatBy})`;
+      if (g.cheatBy) s += window.T("bs.participant"," (participant {n})").replace("{n}", g.cheatBy);
       return s;
     }
 
@@ -179,8 +179,12 @@
       const oppSide = side >= 0 ? 1 - side : 1;
       const ownSide = side >= 0 ? side : 0;
       const oppId = side >= 0 ? (side === 0 ? g.p2Id : g.p1Id) : g.p2Id;
-      $("bs-their-label").textContent = side >= 0 ? `${ctx.name(oppId)}'s waters` : "Player 2's board";
-      $("bs-own-label").textContent = side >= 0 ? "Your fleet" : "Player 1's board";
+      $("bs-their-label").textContent = side >= 0
+        ? window.T("bs.theirWaters","{name}'s waters").replace("{name}", ctx.name(oppId))
+        : window.T("bs.player2Board","Player 2's board");
+      $("bs-own-label").textContent = side >= 0
+        ? window.T("bs.yourFleet","Your fleet")
+        : window.T("bs.player1Board","Player 1's board");
       const sunkTheirs = (g.sunk && g.sunk[oppSide]) || [];
       const sunkMine = (g.sunk && g.sunk[ownSide]) || [];
       const canShoot = g.phase === "shooting" && myTurn();
@@ -218,12 +222,16 @@
       return cls;
     }
 
+    // shipLabel translates a ship for DISPLAY only; SHIPS[].name stays the
+    // stable identifier the rest of the module and the wire use.
+    function shipLabel(ship) { return window.T("bs.ship." + ship.id, ship.name); }
+
     function renderSunk(sunkTheirs, sunkMine) {
-      const mineSunk = sunkMine.map((id) => SHIPS.find((s) => s.id === id).name);
-      const theirsSunk = sunkTheirs.map((id) => SHIPS.find((s) => s.id === id).name);
+      const mineSunk = sunkMine.map((id) => shipLabel(SHIPS.find((s) => s.id === id)));
+      const theirsSunk = sunkTheirs.map((id) => shipLabel(SHIPS.find((s) => s.id === id)));
       $("bs-sunk").textContent =
-        (theirsSunk.length ? `You sank: ${theirsSunk.join(", ")}. ` : "") +
-        (mineSunk.length ? `Lost: ${mineSunk.join(", ")}.` : "");
+        (theirsSunk.length ? window.T("bs.youSank","You sank: {ships}. ").replace("{ships}", theirsSunk.join(", ")) : "") +
+        (mineSunk.length ? window.T("bs.lost","Lost: {ships}.").replace("{ships}", mineSunk.join(", ")) : "");
     }
 
     function renderPlacement() {
@@ -233,7 +241,7 @@
       for (const ship of SHIPS) {
         const b = document.createElement("button");
         b.className = "start-btn" + (placing === ship.id ? " active" : "");
-        b.textContent = `${ship.name} (${ship.len})` + (placed.has(ship.id) ? " ✓" : "");
+        b.textContent = `${shipLabel(ship)} (${ship.len})` + (placed.has(ship.id) ? " ✓" : "");
         b.addEventListener("click", () => { placing = ship.id; hover = -1; render(); });
         shipsEl.appendChild(b);
       }
@@ -273,7 +281,7 @@
     $("bs-randomize").addEventListener("click", () => { randomizeFleet(); render(); });
     $("bs-confirm").addEventListener("click", () => send({ type: "bs.commit", fleet }));
     $("bs-resign").addEventListener("click", () => {
-      if (confirm("Resign battleship?")) send({ type: "bs.resign" });
+      if (confirm(window.T("bs.resignConfirm","Resign battleship?"))) send({ type: "bs.resign" });
     });
 
     function bsWon() {
@@ -288,8 +296,8 @@
     function bsFactual() {
       const base = (g.outcome || "").split(" (")[0];
       const winner = base === "player 1 wins" ? 0 : base === "player 2 wins" ? 1 : -1;
-      if (winner < 0) return g.outcome || "Game over"; // cheat / unknown
-      return ctx.name(winner === 0 ? g.p1Id : g.p2Id) + " wins";
+      if (winner < 0) return window.TO(g.outcome) || window.T("bs.gameOver","Game over"); // cheat / unknown
+      return window.T("bs.wins","{name} wins").replace("{name}", ctx.name(winner === 0 ? g.p1Id : g.p2Id));
     }
 
     // outcomeLabel turns the seat-based outcome ("player 2 wins") into a
@@ -302,9 +310,9 @@
       const note = i >= 0 ? o.slice(i) : "";
       const base = i >= 0 ? o.slice(0, i) : o;
       const winner = base === "player 1 wins" ? 0 : base === "player 2 wins" ? 1 : -1;
-      if (winner < 0) return o; // cheat / unknown text → show as-is
-      if (isPlayer() && winner === mySide()) return "You win!" + note;
-      return ctx.name(winner === 0 ? g.p1Id : g.p2Id) + " wins" + note;
+      if (winner < 0) return window.TO(o); // cheat / unknown text → mapped for display
+      if (isPlayer() && winner === mySide()) return window.T("table.youWin","You win!") + note;
+      return window.T("bs.wins","{name} wins").replace("{name}", ctx.name(winner === 0 ? g.p1Id : g.p2Id)) + note;
     }
 
     // computeShotFx diffs reveal grids prev→new to drive splash/boom/sunk +

@@ -27,17 +27,19 @@
     // ---- status + outcome ---------------------------------------------------
 
     function outcomeText() {
-      if (g.draw) return "Draw — the board filled";
+      if (g.draw) return window.T("gomokup.drawFull","Draw — the board filled");
       if (g.winnerId) {
-        return g.winnerId === ctx.self() ? "You win! 🎉" : `${ctx.name(g.winnerId)} wins`;
+        return g.winnerId === ctx.self()
+          ? window.T("gomokup.youWin","You win! 🎉")
+          : window.T("gomokup.wins","{name} wins").replace("{name}", ctx.name(g.winnerId));
       }
-      return "Game abandoned";
+      return window.T("outcome.abandoned","Game abandoned");
     }
 
     function statusText() {
       if (over()) return outcomeText();
-      if (myTurn()) return "Your turn — place a stone";
-      return `${ctx.name(g.turnId)}'s turn`;
+      if (myTurn()) return window.T("gomokup.yourTurn","Your turn — place a stone");
+      return window.T("gomokup.theirTurn","{name}'s turn").replace("{name}", ctx.name(g.turnId));
     }
 
     function dot(color) {
@@ -61,7 +63,9 @@
         if (g.gone && g.gone[i]) row.classList.add("gone");
         row.append(dot(COLORS[i] || "#888"));
         const nm = document.createElement("span");
-        nm.textContent = id === ctx.self() ? `${ctx.name(id)} (you)` : ctx.name(id);
+        nm.textContent = id === ctx.self()
+          ? window.T("table.youSuffix","{name} (you)").replace("{name}", ctx.name(id))
+          : ctx.name(id);
         row.appendChild(nm);
         el.appendChild(row);
       });
@@ -69,7 +73,7 @@
         for (let i = claimed.length; i < (g.maxSeats || 4); i++) {
           const slot = document.createElement("span");
           slot.className = "gp-player gp-empty";
-          slot.textContent = "＋ open seat";
+          slot.textContent = window.T("gomokup.openSeat","＋ open seat");
           el.appendChild(slot);
         }
       }
@@ -99,16 +103,18 @@
       el.innerHTML = "";
       const claimed = seats();
       if (isPlayer()) {
-        el.appendChild(lobbyBtn("Leave seat", () => send({ type: "gomokup.leaveSeat" })));
+        el.appendChild(lobbyBtn(window.T("gomokup.leaveSeat","Leave seat"), () => send({ type: "gomokup.leaveSeat" })));
       } else if (claimed.length < (g.maxSeats || 4)) {
-        el.appendChild(lobbyBtn("Take a seat", () => send({ type: "gomokup.takeSeat" })));
+        el.appendChild(lobbyBtn(window.T("gomokup.takeSeat","Take a seat"), () => send({ type: "gomokup.takeSeat" })));
       } else {
-        el.appendChild(note("Table full — you're watching"));
+        el.appendChild(note(window.T("gomokup.tableFull","Table full — you're watching")));
       }
       if (g.canBegin) {
-        el.appendChild(lobbyBtn("Begin game ▶", () => send({ type: "gomokup.begin" }), true));
+        el.appendChild(lobbyBtn(window.T("gomokup.beginGame","Begin game ▶"), () => send({ type: "gomokup.begin" }), true));
       } else {
-        el.appendChild(note(claimed.length < 2 ? "Need at least two seated to begin…" : "Waiting for the host to begin…"));
+        el.appendChild(note(claimed.length < 2
+          ? window.T("gomokup.needTwo","Need at least two seated to begin…")
+          : window.T("gomokup.waitingBegin","Waiting for the host to begin…")));
       }
     }
 
@@ -123,13 +129,13 @@
       $("gomokup-board").classList.toggle("hidden", lobby);
       renderPlayers();
       if (lobby) {
-        statusEl.textContent = "Open table — take a seat to play (2–4 players)";
+        statusEl.textContent = window.T("gomokup.openTable","Open table — take a seat to play (2–4 players)");
         renderLobbyControls();
         $("gomokup-resign").classList.add("hidden");
         return;
       }
       if (!g.playing && !over()) {
-        statusEl.textContent = "Waiting for the host to open a table…";
+        statusEl.textContent = window.T("gomokup.waitingHost","Waiting for the host to open a table…");
         return;
       }
       statusEl.textContent = statusText();
@@ -171,7 +177,7 @@
     const resignBtn = $("gomokup-resign");
     if (resignBtn) {
       resignBtn.addEventListener("click", () => {
-        if (confirm("Resign Gomoku Party?")) send({ type: "gomokup.resign" });
+        if (confirm(window.T("gomokup.resignConfirm","Resign Gomoku Party?"))) send({ type: "gomokup.resign" });
       });
     }
 

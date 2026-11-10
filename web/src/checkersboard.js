@@ -61,7 +61,7 @@
       ctx.renderMoves($("checkers-moves"), g.history);
       const statusEl = $("checkers-status");
       if (!g.playing) {
-        statusEl.textContent = "Waiting for the game to start…";
+        statusEl.textContent = window.T("table.waitingStart","Waiting for the game to start…");
         return;
       }
       statusEl.textContent = statusText();
@@ -72,7 +72,7 @@
 
     function statusText() {
       if (over()) return g.outcome;
-      if (isHotseat()) return `${g.turnId === g.p1Id ? "Dark" : "Light"} to move`;
+      if (isHotseat()) return window.T("table.toMove","{color} to move").replace("{color}", g.turnId === g.p1Id ? window.T("checkers.dark","Dark") : window.T("checkers.light","Light"));
       return (myTurn() ? "Your move" : ctx.name(g.turnId) + " to move") +
         (isPlayer() ? ` · you are ${g.p1Id === ctx.self() ? "dark" : "light"}` : "");
     }
@@ -186,7 +186,7 @@
           case "checkers.drawOffered":
             if (isPlayer()) {
               $("checkers-agree-draw").classList.remove("hidden");
-              toast("Draw offered — accept?");
+              toast(window.T("table.drawOffered","Draw offered — accept?"));
             }
             break;
         }

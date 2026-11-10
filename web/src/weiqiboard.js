@@ -22,15 +22,16 @@
     const over = () => g && g.outcome !== "";
 
     function statusText() {
-      const caps = ` · captures ⚫${g.capturesB} ⚪${g.capturesW}`;
+      const caps = window.T("weiqi.captures"," · captures ⚫{b} ⚪{w}").replace("{b}", g.capturesB).replace("{w}", g.capturesW);
       if (over()) {
-        return `${g.outcome} · ⚫${fmt(g.scoreB)} ⚪${fmt(g.scoreW)}`;
+        return `${window.TO(g.outcome)} · ⚫${fmt(g.scoreB)} ⚪${fmt(g.scoreW)}`;
       }
       const stone = g.turnId === g.p1Id ? "⚫" : "⚪";
-      if (isHotseat()) return `${stone} to move` + caps;
+      if (isHotseat()) return window.T("table.toMove", "{color} to move").replace("{color}", stone) + caps;
       const mine = g.turnId === ctx.self();
-      let s = mine ? `Your move ${stone}` : `${ctx.name(g.turnId)}'s move ${stone}`;
-      if (isPlayer()) s += ` · you are ${g.p1Id === ctx.self() ? "⚫" : "⚪"}`;
+      let s = mine ? window.T("table.yourMoveColor","Your move {color}").replace("{color}", stone)
+                   : window.T("table.theirMoveColor","{name}'s move {color}").replace("{name}", ctx.name(g.turnId)).replace("{color}", stone);
+      if (isPlayer()) s += window.T("table.youAre"," · you are {color}").replace("{color}", g.p1Id === ctx.self() ? "⚫" : "⚪");
       return s + caps;
     }
 
@@ -41,7 +42,7 @@
       ctx.renderMoves($("weiqi-moves"), g.history);
       const statusEl = $("weiqi-status");
       if (!g.playing) {
-        statusEl.textContent = "Waiting for the game to start…";
+        statusEl.textContent = window.T("table.waitingStart", "Waiting for the game to start…");
         return;
       }
       statusEl.textContent = statusText();

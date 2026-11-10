@@ -52,7 +52,7 @@
   function renderLobbyName() {
     const n = state.names[state.self] || document.getElementById("display-name").value.trim();
     $("lobby-you").textContent = n
-      ? `You're hosting as ${n}.`
+      ? window.T("home.hostingAs","You're hosting as {name}.").replace("{name}", n)
       : "You're hosting anonymously — set a name on the home screen next time.";
   }
 
@@ -194,7 +194,7 @@
     if (state.role === "spectator" && !anyOpenable) {
       const hint = document.createElement("p");
       hint.className = "note picker-hint";
-      hint.textContent = "👁 You're watching — waiting for the players to start a game.";
+      hint.textContent = window.T("table.watchingWaiting","👁 You're watching — waiting for the players to start a game.");
       el.appendChild(hint);
     }
     for (const [id, mod] of Object.entries(games)) {
@@ -203,6 +203,13 @@
   }
 
   // Split "🔴 Connect Four" into a big icon + the name so the glyph is legible.
+  // gameID maps a module object back to its registry key so the title's
+  // translation key is stable ("game.chess", "game.gomokup", …).
+  function gameID(mod) {
+    for (const id of Object.keys(games)) if (games[id] === mod) return id;
+    return "";
+  }
+
   function buildGameTitle(mod) {
     const title = document.createElement("div");
     title.className = "game-title";
@@ -211,7 +218,9 @@
     iconEl.className = "game-icon";
     iconEl.textContent = sp > 0 ? mod.label.slice(0, sp) : mod.label;
     const nameEl = document.createElement("span");
-    nameEl.textContent = sp > 0 ? mod.label.slice(sp + 1) : "";
+    const rawName = sp > 0 ? mod.label.slice(sp + 1) : "";
+    // The label's icon stays as-is; only the game NAME is translated.
+    nameEl.textContent = rawName ? window.T("game." + gameID(mod), rawName) : "";
     title.append(iconEl, nameEl);
     return title;
   }
@@ -236,7 +245,7 @@
   function applyIdleBadge(id, badge, card, canStart) {
     // Gomoku Party vs the computer: pick 2–4 players (you + 1–3 bots).
     if (state.solo && state.vsBot && id === "gomokup") {
-      badge.textContent = "vs computer";
+      badge.textContent = window.T("table.vsComputer","vs computer");
       card.appendChild(gomokupBotChooser());
       return;
     }
@@ -246,14 +255,14 @@
     const networkedOnly = (state.solo && !state.vsBot && id === "battleship") ||
       (state.solo && (id === "gin" || id === "gomokup"));
     if (networkedOnly) {
-      badge.textContent = id === "gomokup" ? "2–4 players" : "two players";
+      badge.textContent = id === "gomokup" ? window.T("table.twoToFour","2–4 players") : window.T("table.twoPlayers","two players");
       const note = document.createElement("div");
       note.className = "game-matchup";
-      note.textContent = id === "gomokup" ? "Invite friends to play (2–4)" : "Invite a friend to play";
+      note.textContent = id === "gomokup" ? window.T("table.inviteFriends","Invite friends to play (2–4)") : window.T("table.inviteFriend","Invite a friend to play");
       card.appendChild(note);
     } else {
-      badge.textContent = "not started";
-      if (canStart) card.appendChild(actionButton("+ Start", id));
+      badge.textContent = window.T("table.notStarted","not started");
+      if (canStart) card.appendChild(actionButton(window.T("table.start","+ Start"), id));
     }
   }
 
@@ -271,7 +280,7 @@
     } else if (info.status === "over") {
       badge.textContent = info.detail || "finished";
       makeCardOpenGame(card, id);
-      if (canStart) card.appendChild(actionButton("Rematch", id));
+      if (canStart) card.appendChild(actionButton(window.T("table.rematch","Rematch"), id));
     } else {
       applyIdleBadge(id, badge, card, canStart);
     }
@@ -305,7 +314,7 @@
     const wrap = document.createElement("div");
     wrap.className = "game-matchup gp-bot-choose";
     const label = document.createElement("span");
-    label.textContent = "Players:";
+    label.textContent = window.T("table.players","Players:");
     wrap.appendChild(label);
     for (const n of [2, 3, 4]) {
       const b = document.createElement("button");
@@ -338,7 +347,7 @@
   function announceHostChange(e) {
     const newHost = Number(Object.entries(e.members || {}).find(([, r]) => r === "host")?.[0] || 0);
     if (prevHost && newHost && newHost !== prevHost && newHost !== state.self) {
-      toast(((e.names && e.names[newHost]) || ("#" + newHost)) + " is hosting now.");
+      toast(window.T("table.hostingNow","{name} is hosting now.").replace("{name}", (e.names && e.names[newHost]) || ("#" + newHost)));
     }
     if (newHost) prevHost = newHost;
   }
@@ -370,7 +379,7 @@
         $("invite-banner").classList.remove("hidden");
         $("view-home").classList.add("invited");
         $("btn-join").textContent = watch ? "👁 Watch game" : "Join game";
-        $("btn-create").textContent = "or start your own table";
+        $("btn-create").textContent = window.T("home.createOwn","or start your own table");
         $("display-name").focus();
       }
     },
@@ -413,11 +422,13 @@
     // Resumed transparently — the game continued underneath.
     "session.resumed"() {
       $("reconnect-banner").classList.add("hidden");
-      toast("Reconnected.");
+      toast(window.T("table.reconnected","Reconnected."));
     },
     "session.closed"(e) {
       $("reconnect-banner").classList.add("hidden");
-      toast(e.reason === "host left" ? "The host closed the table." : `Session ended: ${e.reason || "connection lost"}`);
+      toast(e.reason === "host left"
+      ? window.T("table.hostClosed","The host closed the table.")
+      : window.T("table.sessionEnded","Session ended: {reason}").replace("{reason}", e.reason || window.T("table.connectionLost","connection lost")));
       setTimeout(() => location.replace(location.pathname), 1500);
     },
     roster(e) {
@@ -446,7 +457,7 @@
     // Host migration: this end was promoted to host (the previous host left).
     "session.promoted"() {
       state.role = "host";
-      toast("You're hosting now.");
+      toast(window.T("table.youHostingNow","You're hosting now."));
       renderPicker();       // host affordances (Start/Rematch)
       renderWatching();
       syncNotifyButton();
@@ -511,6 +522,23 @@
     else document.title = baseTitle;
   }
   document.addEventListener("visibilitychange", updateTurnCue);
+
+  // A locale change must re-render anything built in JS: the picker cards carry
+  // translated titles/badges, and the open board's status line is translated
+  // too. i18n has already handled the static markup by the time this fires.
+  window.addEventListener("kibitz:locale", () => {
+    try {
+      renderPicker();
+      if (state.activeGame && games[state.activeGame]) {
+        games[state.activeGame].setVisible(true);
+      }
+      renderMembers();
+      renderWatching();
+      renderLobbyName();
+    } catch (_) {
+      /* a view that is not mounted is not an error */
+    }
+  });
 
   // ---- turn notifications (Web Push) -----------------------------------------
   // Opt-in "your turn" pushes for networked games. The host mints a per-session
@@ -582,21 +610,22 @@
     // enable requests permission and subscribes (needs the shared pub first).
     async enable() {
       if (!pushSupported || !push.pubB64) {
-        toast("Notifications aren't ready yet — try again in a moment.");
+        toast(window.T("toast.notifyNotReady","Notifications aren't ready yet — try again in a moment."));
         return;
       }
       let perm = Notification.permission;
       if (perm === "default") perm = await Notification.requestPermission();
       if (perm !== "granted") {
-        toast(perm === "denied" ? "Notifications are blocked in your browser settings." : "Notifications not enabled.");
+        toast(perm === "denied" ? window.T("toast.notifyBlocked","Notifications are blocked in your browser settings.")
+                              : window.T("toast.notifyNotEnabled","Notifications not enabled."));
         syncNotifyButton();
         return;
       }
       try {
         await push.subscribe();
-        toast("You'll be notified when it's your turn.");
+        toast(window.T("toast.notifyOn","You'll be notified when it's your turn."));
       } catch {
-        toast("Couldn't enable notifications (on iOS, install to the Home Screen first).");
+        toast(window.T("toast.notifyFailed","Couldn't enable notifications (on iOS, install to the Home Screen first)."));
       }
       syncNotifyButton();
     },
@@ -668,10 +697,12 @@
     if (!el) return;
     const n = Object.values(state.members).filter((r) => r === "spectator").length;
     if (state.role === "spectator") {
-      el.textContent = n > 1 ? `👁 Watching · ${n} here` : "👁 Watching";
+      el.textContent = n > 1
+      ? window.T("table.watchingN","👁 Watching · {n} here").replace("{n}", n)
+      : window.T("table.watching","👁 Watching");
       el.classList.remove("hidden");
     } else if (n > 0) {
-      el.textContent = `👁 ${n} watching`;
+      el.textContent = window.T("table.watchersN","👁 {n} watching").replace("{n}", n);
       el.classList.remove("hidden");
     } else {
       el.classList.add("hidden");
@@ -734,7 +765,7 @@
 
   $("btn-create").addEventListener("click", () => {
     $("btn-create").disabled = true;
-    $("home-status").textContent = "opening a table…";
+    $("home-status").textContent = window.T("home.openingTable","opening a table…");
     send({ type: "create", name: myName() });
   });
 
@@ -753,12 +784,12 @@
 
   $("btn-solo").addEventListener("click", () => {
     $("btn-solo").disabled = true;
-    $("home-status").textContent = "setting up a game vs the computer…";
+    $("home-status").textContent = window.T("home.settingUpBot","setting up a game vs the computer…");
     send({ type: "solo", mode: "bot", level: difficulty, name: myName() });
   });
   $("btn-hotseat").addEventListener("click", () => {
     $("btn-hotseat").disabled = true;
-    $("home-status").textContent = "setting up a pass-and-play game…";
+    $("home-status").textContent = window.T("home.settingUpHotseat","setting up a pass-and-play game…");
     send({ type: "solo", mode: "hotseat", name: myName() });
   });
 
@@ -775,7 +806,9 @@
     const phrase = $("join-phrase").value.trim();
     if (phrase) {
       const spectate = $("watch-toggle").checked;
-      $("home-status").textContent = spectate ? `watching ${phrase}…` : `joining ${phrase}…`;
+      $("home-status").textContent = spectate
+      ? window.T("home.watchingPhrase","watching {phrase}…").replace("{phrase}", phrase)
+      : window.T("home.joiningPhrase","joining {phrase}…").replace("{phrase}", phrase);
       send({ type: "join", phrase, name: myName(), spectate });
     }
   }
@@ -785,19 +818,19 @@
   $("btn-copy").addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText($("lobby-url").value);
-      toast("Play link copied.");
+      toast(window.T("toast.playLinkCopied","Play link copied."));
     } catch {
       $("lobby-url").select();
-      toast("Press ⌘C / Ctrl-C to copy.");
+      toast(window.T("toast.pressToCopy","Press ⌘C / Ctrl-C to copy."));
     }
   });
   $("btn-copy-watch").addEventListener("click", async () => {
     if (!watchLink) return;
     try {
       await navigator.clipboard.writeText(watchLink);
-      toast("Watch link copied — send it to anyone who wants to kibitz.");
+      toast(window.T("toast.watchLinkCopied","Watch link copied — send it to anyone who wants to kibitz."));
     } catch {
-      toast("Couldn't copy — the watch link is your table link with #watch=.");
+      toast(window.T("toast.watchLinkFailed","Couldn't copy — the watch link is your table link with #watch=."));
     }
   });
 
@@ -828,7 +861,7 @@
 
   (async () => {
     if (typeof Go === "undefined") {
-      $("home-status").textContent = "wasm_exec.js missing — run `make wasm`";
+      $("home-status").textContent = window.T("home.wasmMissing","wasm_exec.js missing — run `make wasm`");
       return;
     }
     try {
@@ -836,7 +869,7 @@
       const result = await WebAssembly.instantiateStreaming(fetch("kibitz.wasm"), go.importObject);
       go.run(result.instance);
     } catch (err) {
-      $("home-status").textContent = "couldn't load the core: " + err;
+      $("home-status").textContent = window.T("home.coreLoadFailed","couldn't load the core: {err}").replace("{err}", err);
     }
   })();
 

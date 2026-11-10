@@ -28,15 +28,16 @@
     const over = () => g && g.outcome !== "";
 
     function statusText() {
-      if (over()) return g.outcome;
+      if (over()) return window.TO(g.outcome);
       const glyph = g.turnId === g.p1Id ? "🟥" : "🟦";
       let s;
       if (isHotseat()) {
-        s = `${glyph} to move`;
+        s = window.T("table.toMove","{color} to move").replace("{color}", glyph);
       } else {
         const mine = g.turnId === ctx.self();
-        s = mine ? `Your move ${glyph}` : `${ctx.name(g.turnId)}'s move ${glyph}`;
-        if (isPlayer()) s += ` · you are ${g.p1Id === ctx.self() ? "🟥" : "🟦"}`;
+        s = mine ? window.T("table.yourMoveColor","Your move {color}").replace("{color}", glyph)
+                 : window.T("table.theirMoveColor","{name}'s move {color}").replace("{name}", ctx.name(g.turnId)).replace("{color}", glyph);
+        if (isPlayer()) s += window.T("table.youAre"," · you are {color}").replace("{color}", g.p1Id === ctx.self() ? "🟥" : "🟦");
       }
       return `${s} · 🟥 ${g.scoreP1} – ${g.scoreP2} 🟦`;
     }
@@ -46,7 +47,7 @@
       ctx.renderMoves($("dots-moves"), g.history);
       const statusEl = $("dots-status");
       if (!g.playing) {
-        statusEl.textContent = "Waiting for the game to start…";
+        statusEl.textContent = window.T("table.waitingStart","Waiting for the game to start…");
         return;
       }
       statusEl.textContent = statusText();

@@ -56,7 +56,7 @@
     function statusText() {
       if (over()) return g.outcome;
       const check = g.inCheck ? " · check!" : "";
-      if (isHotseat()) return `${g.turnId === g.p1Id ? "Red" : "Black"} to move${check}`;
+      if (isHotseat()) return window.T("table.toMove","{color} to move").replace("{color}", g.turnId === g.p1Id ? window.T("xiangqi.red","Red") : window.T("xiangqi.black","Black")) + check;
       const mine = g.turnId === ctx.self();
       const who = mine ? "Your move" : ctx.name(g.turnId) + " to move";
       const you = isPlayer() ? ` · you are ${g.p1Id === ctx.self() ? "red" : "black"}` : "";
@@ -100,7 +100,7 @@
       ctx.renderMoves($("xiangqi-moves"), g.history);
       const statusEl = $("xiangqi-status");
       if (!g.playing) {
-        statusEl.textContent = "Waiting for the game to start…";
+        statusEl.textContent = window.T("table.waitingStart","Waiting for the game to start…");
         return;
       }
       statusEl.textContent = statusText();

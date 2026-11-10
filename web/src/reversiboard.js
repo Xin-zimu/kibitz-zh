@@ -20,10 +20,11 @@
 
     function statusText() {
       const score = ` · ⚫${g.black} ⚪${g.white}`;
-      if (over()) return g.outcome + score;
-      if (isHotseat()) return `${g.turnId === g.p1Id ? "⚫" : "⚪"} to move` + score;
-      return (myTurn() ? "Your move" : ctx.name(g.turnId) + " to move") +
-        score + (isPlayer() ? ` · you are ${g.p1Id === ctx.self() ? "⚫" : "⚪"}` : "");
+      if (over()) return window.TO(g.outcome) + score;
+      if (isHotseat()) return window.T("table.toMove","{color} to move").replace("{color}", g.turnId === g.p1Id ? "⚫" : "⚪") + score;
+      return (myTurn() ? window.T("table.yourMove","Your move")
+                       : window.T("table.theirTurn","{name} to move").replace("{name}", ctx.name(g.turnId))) +
+        score + (isPlayer() ? window.T("table.youAre"," · you are {color}").replace("{color}", g.p1Id === ctx.self() ? "⚫" : "⚪") : "");
     }
 
     function render() {
@@ -31,7 +32,7 @@
       ctx.renderMoves($("reversi-moves"), g.history);
       const statusEl = $("reversi-status");
       if (!g.playing) {
-        statusEl.textContent = "Waiting for the game to start…";
+        statusEl.textContent = window.T("table.waitingStart","Waiting for the game to start…");
         return;
       }
       statusEl.textContent = statusText();
@@ -94,7 +95,8 @@
 
     function announcePass() {
       if (g.passed && !lastPassToasted) {
-        toast(myTurn() ? "Opponent had no move — you go again." : "No legal move — turn passed.");
+        toast(myTurn() ? window.T("reversi.noMoveYou","Opponent had no move — you go again.")
+                   : window.T("reversi.noMoveThem","No legal move — turn passed."));
       }
       lastPassToasted = g.passed;
     }

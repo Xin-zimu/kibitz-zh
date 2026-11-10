@@ -151,7 +151,7 @@
     }
 
     function commitMove(sq) {
-      if (!myTurn()) { toast("Not your turn."); return; }
+      if (!myTurn()) { toast(window.T("table.notYourTurn","Not your turn.")); return; }
       send({ type: "chess.move", uci: selected + sq + promotionFor(sq) });
       clearSelection();
     }
@@ -168,7 +168,7 @@
       $("chess-pgn").classList.toggle("hidden", !(g.history && g.history.length));
       const el = $("status-line");
       if (!g.playing) {
-        el.textContent = "Waiting for the game to start…";
+        el.textContent = window.T("table.waitingStart","Waiting for the game to start…");
         return;
       }
       el.textContent = statusText();
@@ -181,21 +181,26 @@
     // handled by the caller).
     function statusText() {
       if (over()) return `${resultText()} — ${g.method}`;
-      if (isHotseat()) return (g.turnId === g.whiteId ? "White" : "Black") + " to move";
-      return (g.turnId === ctx.self() ? "Your move" :
-        ctx.name(g.turnId) + " to move") +
-        (isPlayer() ? "" : " (you're kibitzing)");
+      if (isHotseat()) {
+        const side = g.turnId === g.whiteId ? window.T("chess.white","White") : window.T("chess.black","Black");
+        return window.T("table.toMove","{color} to move").replace("{color}", side);
+      }
+      return (g.turnId === ctx.self() ? window.T("table.yourMove","Your move")
+                                      : window.T("table.theirTurn","{name} to move").replace("{name}", ctx.name(g.turnId))) +
+        (isPlayer() ? "" : window.T("chess.kibitzingSuffix"," (you're kibitzing)"));
     }
 
     // resultText renders g.outcome as a human phrase (shared by status + celebrate).
     function resultText() {
-      return g.outcome === "1/2-1/2" ? "Draw" :
-        (g.outcome === "1-0" ? "White wins" : "Black wins");
+      // Chess uses PGN result tokens as its protocol outcome, not prose.
+      return g.outcome === "1/2-1/2" ? window.T("table.draw","Draw")
+           : g.outcome === "1-0" ? window.T("chess.whiteWins","White wins")
+           : window.T("chess.blackWins","Black wins");
     }
 
     // one-time control wiring
     $("btn-resign").addEventListener("click", () => {
-      if (confirm("Resign the game?")) send({ type: "chess.resign" });
+      if (confirm(window.T("chess.resignConfirm","Resign the game?"))) send({ type: "chess.resign" });
     });
     $("btn-draw").addEventListener("click", () => send({ type: "chess.offerDraw" }));
     $("btn-agree-draw").addEventListener("click", () => send({ type: "chess.agreeDraw" }));
@@ -203,9 +208,9 @@
       if (!g || !g.pgn) return;
       try {
         await navigator.clipboard.writeText(g.pgn);
-        toast("PGN copied.");
+        toast(window.T("table.pgnCopied","PGN copied."));
       } catch {
-        toast("Couldn't copy — select the moves to copy manually.");
+        toast(window.T("table.copyFailed","Couldn't copy — select the moves to copy manually."));
       }
     });
 
@@ -251,9 +256,9 @@
     function onDrawOffered() {
       if (isPlayer()) {
         $("btn-agree-draw").classList.remove("hidden");
-        toast("Draw offered — accept?");
+        toast(window.T("table.drawOffered","Draw offered — accept?"));
       } else {
-        toast("A draw was offered.");
+        toast(window.T("table.drawWasOffered","A draw was offered."));
       }
     }
 

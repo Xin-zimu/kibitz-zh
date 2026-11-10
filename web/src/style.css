@@ -1325,3 +1325,31 @@ button.back { margin-bottom: 0.7rem; }
 @media (prefers-reduced-motion: reduce) {
   .reconnect-dot { animation: none; opacity: 0.8; }
 }
+/* Language switcher on the home card */
+.locale-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+.locale-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.locale-select {
+  margin-left: auto;
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.locale-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

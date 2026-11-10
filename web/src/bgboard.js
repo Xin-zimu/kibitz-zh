@@ -184,7 +184,7 @@
         tray.type = "button";
         tray.className = "bg-tray " + who;
         if (hi.targets.has(0) && hi.mover === who) tray.classList.add("target");
-        tray.textContent = `${who === "w" ? "⚪" : "⚫"} off: ${n}`;
+        tray.textContent = window.T("bg.off","{color} off: {n}").replace("{color}", who === "w" ? "⚪" : "⚫").replace("{n}", n);
         tray.addEventListener("click", () => onPoint(0));
         t.appendChild(tray);
       }
@@ -198,7 +198,7 @@
       ctx.renderMoves($("bg-moves"), g.history);
       const statusEl = $("bg-status");
       if (!g.playing) {
-        statusEl.textContent = "Waiting for the game to start…";
+        statusEl.textContent = window.T("table.waitingStart","Waiting for the game to start…");
         $("bg-roll").classList.add("hidden");
         return;
       }
@@ -212,24 +212,26 @@
     }
 
     function rollStatus(moverIcon) {
-      if (isHotseat()) return `${moverIcon} to roll`;
-      return myTurn() ? "Your roll" : "Waiting for opponent to roll";
+      if (isHotseat()) return window.T("bg.toRoll","{color} to roll").replace("{color}", moverIcon);
+      return myTurn() ? window.T("bg.yourRoll","Your roll") : window.T("bg.waitingRoll","Waiting for opponent to roll");
     }
 
     function statusWord() {
       const moverIcon = moverIsWhite() ? "⚪" : "⚫";
-      if (g.phase === "over") return g.outcome;
+      if (g.phase === "over") return window.TO(g.outcome);
       if (g.phase === "rolling") return rollStatus(moverIcon);
-      if (g.phase === "handshake") return "Rolling…";
-      if (isHotseat()) return `${moverIcon} to move`;
-      if (myTurn()) return "Your move";
-      if (isPlayer()) return ctx.name(g.turnId) + " to move";
-      return "Kibitzing";
+      if (g.phase === "handshake") return window.T("bg.rolling","Rolling…");
+      if (isHotseat()) return window.T("table.toMove","{color} to move").replace("{color}", moverIcon);
+      if (myTurn()) return window.T("table.yourMove","Your move");
+      if (isPlayer()) return window.T("table.theirTurn","{name} to move").replace("{name}", ctx.name(g.turnId));
+      return window.T("table.kibitzing","Kibitzing");
     }
 
     function statusText() {
-      const suffix = (isPlayer() && !isHotseat()) ? ` · you are ${isWhite() ? "⚪" : "⚫"}` : "";
-      return `${statusWord()} · pips ⚪${g.pipsW} ⚫${g.pipsB}${suffix}`;
+      const suffix = (isPlayer() && !isHotseat())
+        ? window.T("table.youAre"," · you are {color}").replace("{color}", isWhite() ? "⚪" : "⚫") : "";
+      return window.T("bg.status","{word} · pips ⚪{w} ⚫{b}{suffix}")
+        .replace("{word}", statusWord()).replace("{w}", g.pipsW).replace("{b}", g.pipsB).replace("{suffix}", suffix);
     }
 
     function updateDice() {
@@ -315,7 +317,8 @@
             applyState(e);
             break;
           case "bg.danced":
-            toast(e.by === ctx.self() ? "No legal moves — turn passed." : "Opponent danced (no legal moves).");
+            toast(e.by === ctx.self() ? window.T("bg.noMovesYou","No legal moves — turn passed.")
+                                  : window.T("bg.noMovesThem","Opponent danced (no legal moves)."));
             break;
         }
       },
