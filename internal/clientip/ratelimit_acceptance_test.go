@@ -21,19 +21,10 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/richardwooding/kibitz/internal/relaycfg"
 	"github.com/richardwooding/parley/relay"
 	"golang.org/x/time/rate"
 )
-
-// productionRelayOptions mirrors what cmd/kibitz/main.go configures, so the test
-// fails if the shipped limits are ever lowered below what the brief requires.
-func productionRelayOptions() relay.Options {
-	return relay.Options{
-		MaxSessions: 1000,
-		ConnRate:    rate.Every(2 * time.Second), // 30/min
-		ConnBurst:   20,
-	}
-}
 
 // dialThroughOnce performs one WebSocket upgrade through the given handler and
 // reports whether it was accepted.
@@ -68,14 +59,17 @@ func statusOf(resp *http.Response) any {
 }
 
 // newProxiedRelay starts the relay behind the client-IP middleware, exactly as
-// the deployment wires it.
+// the deployment wires it — including the connection limits, which come from
+// internal/relaycfg: the SAME Options() value cmd/kibitz hands to relay.New.
+// This is what makes the assertions bite: lowering a shipped limit now fails
+// these tests, instead of passing against a stale copy of the numbers.
 func newProxiedRelay(t *testing.T, trusted string) *httptest.Server {
 	t.Helper()
 	cfg, err := ParseTrusted(trusted)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := relay.New(productionRelayOptions())
+	r := relay.New(relaycfg.Options())
 	t.Cleanup(r.Close)
 	srv := httptest.NewServer(cfg.Handler(r))
 	t.Cleanup(srv.Close)

@@ -21,10 +21,10 @@ import (
 	"github.com/richardwooding/kibitz/internal/clientip"
 	"github.com/richardwooding/kibitz/internal/dashboard"
 	"github.com/richardwooding/kibitz/internal/pushfwd"
+	"github.com/richardwooding/kibitz/internal/relaycfg"
 	"github.com/richardwooding/kibitz/web"
 	"github.com/richardwooding/parley/relay"
 	"github.com/richardwooding/parley/wire"
-	"golang.org/x/time/rate"
 )
 
 // clusterToken derives the internal peer-stats auth token from the dashboard
@@ -187,19 +187,23 @@ func main() {
 		router = aff.Route
 		log.Printf("fly affinity routing enabled (machine %s, app %s)", mid, os.Getenv("FLY_APP_NAME"))
 	}
-	relaySrv := relay.New(relay.Options{
-		MaxSessions: *maxSessions,
-		Router:      router,
-		// Per-client connection budget. parley's defaults (5/minute, burst 5)
-		// are tuned for the relay running directly on an edge network; behind
-		// the nginx reverse proxy used by this deployment every player shares
-		// the proxy's address, so the default turns into a site-wide budget and
-		// the sixth person to open the page gets 429. See internal/clientip for
-		// how the real client address is recovered, and the deployment notes for
-		// the matching nginx limit_req zone.
-		ConnRate:  rate.Every(2 * time.Second), // 30 connections/minute sustained
-		ConnBurst: 20,
-	})
+	relayOpts := relaycfg.Options()
+	// The -max-sessions flag overrides the shipped cap; 0 keeps the configured
+	// default rather than falling through to parley's (identical) fallback.
+	if *maxSessions > 0 {
+		relayOpts.MaxSessions = *maxSessions
+	}
+	relayOpts.Router = router
+	// Per-client connection budget. parley's defaults (5/minute, burst 5) are
+	// tuned for the relay running directly on an edge network; behind the nginx
+	// reverse proxy used by this deployment every player shares the proxy's
+	// address, so the default turns into a site-wide budget and the sixth person
+	// to open the page gets 429. Why these numbers, and why they are not
+	// parley's defaults, lives in internal/relaycfg — the single source of truth
+	// shared with the acceptance tests, so the tested limits are the shipped
+	// ones. See internal/clientip for how the real client address is recovered,
+	// and the deployment notes for the matching nginx limit_req zone.
+	relaySrv := relay.New(relayOpts)
 	defer relaySrv.Close()
 	// Rewrite RemoteAddr to the address nginx reports, but only for requests
 	// that actually arrived from a trusted proxy hop. Without this the relay's
