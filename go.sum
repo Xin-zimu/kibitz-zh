@@ -4,8 +4,8 @@ github.com/andybalholm/brotli v1.2.4 h1:649LN6qF+/7JJYNN3Wdu4Dt5PS6eC/yP/Go3Bb0/
 github.com/andybalholm/brotli v1.2.4/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
-github.com/corentings/chess/v2 v2.6.0 h1:xFYsVplyA3EGy9XXPJx9pNzNuftFqKvw2fBnJF9apOI=
-github.com/corentings/chess/v2 v2.6.0/go.mod h1:UPFmUPTLiJN9qOux6aNt+NwEPuyId0+REsKMmmtYXpU=
+github.com/corentings/chess/v2 v2.6.1 h1:mXTHMnRBw9YBgcA9elf5o8KZ+doaoqVcEhCgK2jNU8E=
+github.com/corentings/chess/v2 v2.6.1/go.mod h1:UPFmUPTLiJN9qOux6aNt+NwEPuyId0+REsKMmmtYXpU=
 github.com/fxamacker/cbor/v2 v2.9.4 h1:xwjVlxEMR3S605oUlgBjKLTTeGFciYPGYCtF/35LKGo=
 github.com/fxamacker/cbor/v2 v2.9.4/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
 github.com/richardwooding/backgammon v0.1.1 h1:f9CrClYMGNuFvSXmYSNx7dW8SVi/HEoUFOYyzErHxDc=
