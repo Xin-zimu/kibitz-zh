@@ -204,9 +204,21 @@ func TestGomokuPartyLobbyLeaveAndGate(t *testing.T) {
 	}
 }
 
-// TestGomokuPartyLeaveEndsGame: with three seated players, one leaving mid-game
-// ends the game as abandoned on every remaining end.
-func TestGomokuPartyLeaveEndsGame(t *testing.T) {
+// TestGomokuPartyLeaveContinuesForRemainingPlayers replaces upstream's
+// TestGomokuPartyLeaveEndsGame, which pinned the behaviour this fork changed:
+// upstream ended a 3- or 4-player game whenever ANY player left, so one person
+// closing a tab killed the game for everyone still connected.
+//
+// New rule (see internal/service/game/ring.go):
+//   - an OFF-TURN player leaving marks their seat Gone and play continues;
+//   - the TURN HOLDER leaving has no order-independent resolution, so the game
+//     ends rather than hanging on a seat nobody occupies;
+//   - dropping to a single active seat ends the game with that seat winning.
+//
+// NOTE ON SEAT ORDER: seats are assigned in CLAIM ARRIVAL order, not by join
+// order, so this test reads the authoritative seat list instead of assuming
+// p1 holds seat 1. (Assuming it made this test flaky under -race.)
+func TestGomokuPartyLeaveContinuesForRemainingPlayers(t *testing.T) {
 	url := startRelay(t)
 	host, phrase := hostGP(t, url)
 	p1 := joinGP(t, url, phrase)
@@ -220,18 +232,96 @@ func TestGomokuPartyLeaveEndsGame(t *testing.T) {
 	if err := host.gp.Begin(); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	gpWait(t, host, func(s gomokup.State) bool { return s.Playing && uint32(s.TurnID) == uint32(host.client.Self()) })
+	byID := map[wire.ParticipantID]*gpTable{
+		host.client.Self(): host,
+		p1.client.Self():   p1,
+		p2.client.Self():   p2,
+	}
+	st0 := gpWait(t, host, func(s gomokup.State) bool {
+		return s.Playing && uint32(s.TurnID) == uint32(host.client.Self())
+	})
+	// Sanity: the host must actually hold the opening turn for this scenario.
+	if len(st0.Seats) != 3 {
+		t.Fatalf("seats=%v, want 3", st0.Seats)
+	}
 	if err := host.gp.Place(0, 0); err != nil {
 		t.Fatalf("place: %v", err)
 	}
 
-	if err := p2.client.Close(); err != nil {
+	// --- case 1: an OFF-TURN player leaves; the game must continue ----------
+	afterMove := gpWait(t, host, func(s gomokup.State) bool {
+		return s.Board[0] != 0 && s.TurnID != 0
+	})
+	leaverID := afterMove.TurnID // the player whose turn it now IS
+	// Choose an off-turn leaver: any seated player who is neither the host nor
+	// the current turn holder.
+	var offTurnSeat = -1
+	for i, id := range afterMove.Seats {
+		if id != host.client.Self() && id != leaverID {
+			offTurnSeat = i
+			break
+		}
+	}
+	if offTurnSeat < 0 {
+		t.Fatal("no off-turn seat to test with")
+	}
+	offTurnTable := byID[afterMove.Seats[offTurnSeat]]
+	if offTurnTable == nil {
+		t.Fatalf("seat %d has no table", offTurnSeat)
+	}
+	if err := offTurnTable.client.Close(); err != nil {
 		t.Fatal(err)
 	}
-	for _, tb := range []*gpTable{host, p1} {
-		st := gpWait(t, tb, func(s gomokup.State) bool { return s.Outcome != "" })
-		if st.Outcome != "abandoned" || st.WinnerID != 0 {
-			t.Fatalf("after a leave: outcome=%q winner=%d, want abandoned/0", st.Outcome, st.WinnerID)
+
+	survivors := []*gpTable{host}
+	for _, tb := range []*gpTable{p1, p2} {
+		if tb != offTurnTable {
+			survivors = append(survivors, tb)
 		}
+	}
+	for _, tb := range survivors {
+		st := gpWait(t, tb, func(s gomokup.State) bool { return s.Gone[offTurnSeat] })
+		if st.Outcome != "" {
+			t.Fatalf("off-turn leave ended the game (outcome=%q); "+
+				"the remaining players should still be able to finish", st.Outcome)
+		}
+		if !st.Playing {
+			t.Fatal("game should still be playing after an off-turn leave")
+		}
+	}
+
+	// --- the survivors can still play a real move --------------------------
+	turnHolder := byID[gpWait(t, host, func(s gomokup.State) bool { return s.Playing }).TurnID]
+	if turnHolder == nil {
+		t.Fatal("no table for the current turn holder")
+	}
+	row, col := int8(5), int8(5)
+	if err := turnHolder.gp.Place(row, col); err != nil {
+		t.Fatalf("survivor could not move after a teammate left: %v", err)
+	}
+	for _, tb := range survivors {
+		gpWait(t, tb, func(s gomokup.State) bool {
+			return s.Board[int(row)*gomokup.Size+int(col)] != 0
+		})
+	}
+
+	// --- case 2: resign down to one active seat; survivor wins -------------
+	// Resigning is used rather than closing a socket so the outcome is
+	// deterministic regardless of which seat happens to hold the turn (closing
+	// the turn holder's socket legitimately ends the game as abandoned).
+	for _, tb := range survivors {
+		if tb == host {
+			continue
+		}
+		if st := tb.gp.State(); st.Outcome == "" {
+			if err := tb.gp.Resign(); err != nil {
+				t.Fatalf("resign: %v", err)
+			}
+		}
+	}
+	st := gpWait(t, host, func(s gomokup.State) bool { return s.Outcome != "" })
+	if uint32(st.WinnerID) != uint32(host.client.Self()) {
+		t.Fatalf("after dropping to one active seat: outcome=%q winner=%d, want the survivor (%d) to win",
+			st.Outcome, st.WinnerID, host.client.Self())
 	}
 }

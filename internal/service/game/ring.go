@@ -88,12 +88,32 @@ func (r *Ring) lastActive() int {
 	return 0
 }
 
-// NoteLeft handles a departure during a live game: a seated player's leave ENDS
-// the game and marks its seat Gone (mirrors the two-player forfeit; avoids
-// skipping a Gone seat mid-play, which would make turn advancement depend on
-// move/leave ordering that has no global order across ends). Returns
-// (winnerSeat, true) with the sole survivor, or (-1, true) when two or more
-// remain (abandoned). A non-playing or non-seated leave returns (-1, false).
+// NoteLeft handles a departure during a live game. A seated player's leave
+// marks their seat Gone; the game CONTINUES with the remaining players as long
+// as at least two of them are still active. It ends only when fewer than two
+// active seats remain — the sole survivor wins, or the game is abandoned when
+// nobody is left.
+//
+// Upstream kibitz ended the game on ANY leave, to dodge the ordering hazard
+// below. That is unnecessarily harsh for 3- and 4-player games: one player
+// closing a tab killed the game for everyone still connected.
+//
+// The ordering hazard, and why continuing is still sound:
+//
+// The relay orders frames per sender only, so a membership leave and an
+// in-flight move can be observed in either order on different ends. The
+// dangerous shape is a leave whose seat is ALSO the current turn holder: one
+// end might apply the move first (board gains a stone, turn advances) while
+// another processes the leave first and then has to reject the move as
+// not-your-turn. Eagerly advancing the turn past a Gone seat is what makes that
+// asymmetric.
+//
+// Continuing is therefore safe precisely when the leaver does NOT hold the turn
+// — then the leave changes no turn state at all, and every end converges
+// regardless of order. When the leaver DOES hold the turn, there is no
+// order-independent answer, and degrading to a finished game is strictly better
+// than leaving a live game whose turn points at a seat nobody occupies (which
+// would hang every survivor forever). See markGone.
 func (r *Ring) NoteLeft(id wire.ParticipantID, ph Phase) (int, bool) {
 	if r.Departed == nil {
 		r.Departed = map[wire.ParticipantID]bool{}
@@ -106,11 +126,10 @@ func (r *Ring) NoteLeft(id wire.ParticipantID, ph Phase) (int, bool) {
 }
 
 // ApplyDeparted marks Gone any seat whose player already left the session
-// (see Departed) and reports the end-of-game result exactly as NoteLeft
-// would have: (winnerSeat, true) for a sole survivor, (-1, true) when two or
-// more remain, (-1, false) when no seat was newly marked. Call it after
-// installing a seat list (SetSeats from a newGame or snapshot); the caller
-// decides, by its own phase, whether "over" ends a live game.
+// (see Departed) and applies the same continue-or-finish rule as NoteLeft.
+// Returns (winnerSeat, true) when the game must end, (-1, false) when it
+// continues or when no seat was newly marked. Call it after installing a seat
+// list (SetSeats from a newGame or snapshot).
 func (r *Ring) ApplyDeparted() (int, bool) {
 	marked := false
 	for i, id := range r.Seats {
@@ -122,28 +141,60 @@ func (r *Ring) ApplyDeparted() (int, bool) {
 	if !marked {
 		return -1, false
 	}
-	if r.ActiveCount() == 1 {
-		return r.lastActive(), true
-	}
-	return -1, true
+	return r.settle()
 }
 
 // Concede ends a live game for a seated player who voluntarily forfeits — same
-// end-of-game semantics as a mid-game leave.
+// continue-or-finish semantics as a mid-game leave.
 func (r *Ring) Concede(id wire.ParticipantID) (int, bool) {
 	return r.markGone(id)
 }
 
+// markGone marks the seat Gone and reports whether the game must end.
+//
+// The decision is deliberately conservative, because the relay only orders
+// frames per sender: a leave and an in-flight move can be observed in different
+// orders on different ends, and any rule that makes the turn depend on that
+// order corrupts the game.
+//
+//   - Fewer than two active seats left: end. A sole survivor wins; with nobody
+//     left it is abandoned. This is order-independent — it depends only on the
+//     seat list and the departed set, which every end shares.
+//   - The leaver holds the turn: end as abandoned. Here there is NO
+//     order-independent answer. The leaver may have just broadcast a move, so
+//     one end can apply it (stone placed, turn advanced) while another handles
+//     the leave first, advances the turn past the dead seat, and then rejects
+//     that same move as not-your-turn. The two ends would disagree on the
+//     board. Ending in both orders keeps every end agreed on the outcome; only
+//     the cosmetic board of an already-finished game can differ.
+//   - Otherwise: play on with the remaining players. This is the case worth
+//     improving: the leaver was not on turn, so they could not legally have a
+//     move in flight (a move from them is refused as not-your-turn in BOTH
+//     orders), the leave touches no turn state, and every end converges. One
+//     player closing a tab in a 3- or 4-player game no longer kills it for the
+//     people still playing.
 func (r *Ring) markGone(id wire.ParticipantID) (int, bool) {
 	seat, seated := r.SideOf(id)
 	if !seated || r.Gone[seat] {
 		return -1, false
 	}
 	r.Gone[seat] = true
-	if r.ActiveCount() == 1 {
-		return r.lastActive(), true
+	return r.settle()
+}
+
+// settle decides the outcome after seats were marked Gone. It must be called
+// with the Gone set already updated and must not itself mutate turn state.
+func (r *Ring) settle() (int, bool) {
+	switch r.ActiveCount() {
+	case 0:
+		return -1, true // nobody left: abandoned
+	case 1:
+		return r.lastActive(), true // sole survivor wins
 	}
-	return -1, true
+	if r.Turn >= 0 && r.Turn < len(r.Gone) && r.Gone[r.Turn] {
+		return -1, true // turn holder left: end (see markGone)
+	}
+	return -1, false // two or more active, turn intact: play on
 }
 
 // OnPromote resets rematch bookkeeping when this end is promoted to host
