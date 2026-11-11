@@ -33,11 +33,17 @@ git fetch upstream --tags
 ## 二、检查上游是否有更新
 
 ```sh
-git fetch upstream --tags --prune
+git fetch upstream main --no-tags                      # 只取分支，不碰 tag（见第六节）
 git log --oneline HEAD..upstream/main | head -30     # 上游有、我们没有的提交
 git rev-list --count HEAD..upstream/main             # 落后多少个提交
 git log --oneline upstream/main..HEAD                # 我们独有的提交（应只含中文与修复）
 git describe --tags --abbrev=0 upstream/main         # 上游最新 tag
+```
+
+需要某个具体的上游 tag 时按名取，不要整批拉：
+
+```sh
+git fetch upstream tag v0.33.0
 ```
 
 判断是否需要跟进：
@@ -136,3 +142,7 @@ git revert -m 1 <merge-commit>   # 生成一次反向提交，历史保留
   跳过（显示为 skipped，不会失败）。文件本身保留，便于同步上游时不产生冲突。
 - 因此本仓库可以正常 `git push origin v0.1.0` 打标：只有 `ci.yml` 会在 `main` 上跑测试，
   发布 Release 需手动创建（`gh release create`）。
+- **标签同名提示**：上游历史里也有一个 `v0.1.0`（2026-07-23 的极早期版本），与本 Fork 的
+  `v0.1.0` 毫无关系。本地若同时存在两个远程的 tag，`git fetch --tags` 会报 "would clobber
+  existing tag" —— 这是预期的：日常同步用 `git fetch upstream main --no-tags`，需要上游某个
+  tag 时按名取（`git fetch upstream tag v0.33.0`），不要整批覆盖。
