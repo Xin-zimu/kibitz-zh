@@ -436,6 +436,15 @@ input[type="text"] {
 
 .game-actions { display: flex; gap: 0.6rem; margin-top: 0.8rem; align-items: center; }
 
+/* The shared takeback bar sits above every board, so collapsing it to nothing
+   moved the board down and back up each time an offer appeared or expired — a
+   visible jump on every move of a two-player game. Keep one control row's
+   height reserved (a ghost button is ~2.9rem tall) so the controls can appear
+   without moving anything. Solo sessions never offer a takeback (see
+   updateTakebackBar), so they keep no empty strip. */
+#takeback-bar { min-height: 2.9rem; margin-top: 0.2rem; }
+#view-table.solo #takeback-bar { min-height: 0; }
+
 /* game picker */
 .game-picker {
   display: grid;

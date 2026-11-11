@@ -164,8 +164,14 @@
   const lastState = {}; // game id -> last "<id>.state" event
   function updateTakebackBar(e) {
     const tb = $("btn-takeback"), ab = $("btn-accept-takeback");
-    const canOffer = !!(e && e.canTakeback);
-    const canAccept = !!(e && e.takebackBy && e.takebackBy !== state.self);
+    // A takeback is a two-party negotiation: the offer only takes effect when
+    // the OTHER end accepts. In a solo session the opponent is a bot (which
+    // never answers an offer) or a silently-drained loopback end, so offering
+    // one is a dead end — and because the control lives above the board, the
+    // button appearing after every human move and vanishing when the reply
+    // lands reflowed the whole pane. Never offer it without a real opponent.
+    const canOffer = !!(e && e.canTakeback) && !state.solo;
+    const canAccept = !!(e && e.takebackBy && e.takebackBy !== state.self) && !state.solo;
     tb.classList.toggle("hidden", !canOffer);
     ab.classList.toggle("hidden", !canAccept);
   }

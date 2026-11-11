@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	chesslib "github.com/corentings/chess/v2"
@@ -591,8 +592,15 @@ func (s *Service) revertLocked() {
 		return
 	}
 	g := chesslib.NewGame()
-	if err := g.UnmarshalText([]byte(snap.PGN)); err != nil {
-		return
+	// The stash taken before the very first move holds the start position, whose
+	// PGN is just the result marker ("*" — empty games render as "*", not "").
+	// UnmarshalText has no game to replay there and fails, which used to make a
+	// first-move takeback a silent no-op: the offer was consumed, the move stayed
+	// on the board and the turn never came back.
+	if pgn := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(snap.PGN), "*")); pgn != "" {
+		if err := g.UnmarshalText([]byte(snap.PGN)); err != nil {
+			return
+		}
 	}
 	s.game = g
 	s.whiteID = wire.ParticipantID(snap.WhiteID)

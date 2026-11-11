@@ -76,3 +76,42 @@ func TestTakebackUnavailableBeforeAnyMove(t *testing.T) {
 		t.Fatalf("OfferTakeback should fail before any move")
 	}
 }
+
+// TestTakebackRevertsFirstMove covers the stash taken before the very first
+// move: its PGN is the bare result marker ("*"), which the engine can't replay.
+// The revert must fall back to the start position rather than no-op silently —
+// otherwise the offer is consumed and the move stays on the board.
+func TestTakebackRevertsFirstMove(t *testing.T) {
+	p := newPair(t)
+	p.moveAs(t, p.host, "e2e4")
+
+	if !p.host.State().CanTakeback {
+		t.Fatalf("host (last mover) should be able to offer a takeback")
+	}
+	if err := p.host.OfferTakeback(); err != nil {
+		t.Fatalf("offer: %v", err)
+	}
+	p.pump(t)
+	if err := p.player.AcceptTakeback(); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	p.pump(t)
+
+	for _, st := range []State{p.host.State(), p.player.State()} {
+		if len(st.History) != 0 {
+			t.Fatalf("first move not reverted: history=%v", st.History)
+		}
+		if st.TurnID != st.WhiteID {
+			t.Fatalf("turn after revert = %d, want white (%d)", st.TurnID, st.WhiteID)
+		}
+		if st.TakebackBy != 0 {
+			t.Fatalf("takeback offer not cleared: %d", st.TakebackBy)
+		}
+	}
+
+	// Play continues normally from the start position.
+	p.moveAs(t, p.host, "d2d4")
+	if got := p.host.State().History; len(got) != 1 || got[0] != "d4" {
+		t.Fatalf("history after replay = %v, want [d4]", got)
+	}
+}
