@@ -171,7 +171,7 @@ func TestGomokuPartyFourPlayersPlaysToWin(t *testing.T) {
 	}
 	var seq []mv
 	rows := []int8{5, 9, 13} // the three non-winning rows
-	for col := int8(0); col < 5; col++ {
+	for col := range int8(5) {
 		seq = append(seq, mv{0, 0, col})
 		for i := 1; i <= 3; i++ {
 			if col == 4 {
@@ -264,7 +264,7 @@ func TestGomokuPartyRematchRotatesOpeningSeat(t *testing.T) {
 	seats, host, _ := seatFourTables(t)
 
 	openers := map[wire.ParticipantID]bool{}
-	for round := 0; round < 3; round++ {
+	for round := range 3 {
 		if err := host.gp.Begin(); err != nil {
 			t.Fatalf("round %d begin: %v", round, err)
 		}

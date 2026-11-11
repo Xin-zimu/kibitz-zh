@@ -198,7 +198,7 @@ func TestForgedHeaderCannotEscapeLimiter(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	allowed := 0
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		hdr := http.Header{}

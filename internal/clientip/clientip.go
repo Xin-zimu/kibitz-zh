@@ -68,7 +68,7 @@ func DefaultConfig() Config {
 // widen or narrow the trust boundary.
 func ParseTrusted(spec string) (Config, error) {
 	cfg := Config{}
-	for _, raw := range strings.Split(spec, ",") {
+	for raw := range strings.SplitSeq(spec, ",") {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
 			continue
