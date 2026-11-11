@@ -219,7 +219,11 @@
             <div id="gomoku-board" class="gm-board"></div>
             <div class="game-actions">
               <button id="gomoku-resign" class="ghost">Resign</button>
+              <!-- Rematch in place, so a finished game doesn't force a trip back
+                   to the picker. Hidden for spectators (they can't seat players). -->
+              <button id="gomoku-rematch" class="ghost hidden" data-i18n="table.rematch">Rematch</button>
             </div>
+            <p id="gomoku-rematch-hint" class="note hidden" data-i18n="table.rematchWaiting">Game over — waiting for the players to start the next one.</p>
             <div class="moves-head"><span>Moves</span></div>
             <ol id="gomoku-moves" class="move-list"></ol>
           </div>
@@ -231,7 +235,11 @@
             <div id="gomokup-board" class="gp-board"></div>
             <div class="game-actions">
               <button id="gomokup-resign" class="ghost">Resign</button>
+              <!-- Same in-place rematch as Gomoku: the host reopens the seating
+                   lobby, so a finished party can start again without leaving. -->
+              <button id="gomokup-rematch" class="ghost hidden" data-i18n="table.rematch">Rematch</button>
             </div>
+            <p id="gomokup-rematch-hint" class="note hidden" data-i18n="table.rematchWaiting">Game over — waiting for the players to start the next one.</p>
             <div class="moves-head"><span>Moves</span></div>
             <ol id="gomokup-moves" class="move-list"></ol>
           </div>

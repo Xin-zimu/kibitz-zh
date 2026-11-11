@@ -23,6 +23,9 @@
     const isPlayer = () => mySeat() >= 0;
     const myTurn = () => g && g.playing && g.turnId === ctx.self();
     const over = () => g && g.outcome !== "";
+    // The host reopens the lobby; a seated player asks the host to. Anyone else
+    // is a kibitzer and cannot seat a table (the service enforces the same).
+    const canStart = () => ctx.role() === "host" || isPlayer();
 
     // ---- status + outcome ---------------------------------------------------
 
@@ -120,6 +123,13 @@
 
     // ---- board --------------------------------------------------------------
 
+    // renderRematch mirrors Gomoku: a "next game" button for the host or a
+    // seated player, and an explanation for a kibitzer.
+    function renderRematch(finished) {
+      $("gomokup-rematch").classList.toggle("hidden", !(finished && canStart()));
+      $("gomokup-rematch-hint").classList.toggle("hidden", !(finished && !canStart()));
+    }
+
     function render() {
       if (!visible || !g) return;
       ctx.renderMoves($("gomokup-moves"), g.history);
@@ -132,14 +142,17 @@
         statusEl.textContent = window.T("gomokup.openTable","Open table — take a seat to play (2–4 players)");
         renderLobbyControls();
         $("gomokup-resign").classList.add("hidden");
+        renderRematch(false);
         return;
       }
       if (!g.playing && !over()) {
         statusEl.textContent = window.T("gomokup.waitingHost","Waiting for the host to open a table…");
+        renderRematch(false);
         return;
       }
       statusEl.textContent = statusText();
       $("gomokup-resign").classList.toggle("hidden", !isPlayer() || over());
+      renderRematch(over());
       renderBoard(myTurn() && !over());
     }
 
@@ -180,6 +193,8 @@
         if (confirm(window.T("gomokup.resignConfirm","Resign Gomoku Party?"))) send({ type: "gomokup.resign" });
       });
     }
+    // Rematch reopens the seating lobby (start path shared with the picker).
+    $("gomokup-rematch").addEventListener("click", () => send({ type: "game.start", game: "gomokup" }));
 
     function won() {
       if (g.draw || !isPlayer()) return null;

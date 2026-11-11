@@ -18,6 +18,10 @@
     // In solo the user drives both sides, so it is always "their" turn.
     const myTurn = () => g && (isHotseat() || g.turnId === ctx.self());
     const over = () => g && g.outcome !== "";
+    // Only the host and the seated opponent may start the next game (the same
+    // rule the service enforces in game.Table.AuthorizeStart); a kibitzer can
+    // watch but not seat players.
+    const canStart = () => ctx.role() === "host" || isPlayer();
 
     function statusText() {
       if (over()) return window.TO(g.outcome);
@@ -30,16 +34,26 @@
       return s;
     }
 
+    // renderRematch offers "next game" in the pane itself once a game is over:
+    // a button for the host/opponent, and a plain explanation for a kibitzer so
+    // the end of a game never reads as "the only way out is to leave".
+    function renderRematch(finished) {
+      $("gomoku-rematch").classList.toggle("hidden", !(finished && canStart()));
+      $("gomoku-rematch-hint").classList.toggle("hidden", !(finished && !canStart()));
+    }
+
     function render() {
       if (!visible || !g) return;
       ctx.renderMoves($("gomoku-moves"), g.history);
       const statusEl = $("gomoku-status");
       if (!g.playing) {
         statusEl.textContent = window.T("table.waitingStart", "Waiting for the game to start…");
+        renderRematch(false);
         return;
       }
       statusEl.textContent = statusText();
       $("gomoku-resign").classList.toggle("hidden", !isPlayer() || over());
+      renderRematch(over());
       renderBoard(myTurn() && !over());
     }
 
@@ -76,6 +90,9 @@
     $("gomoku-resign").addEventListener("click", () => {
       if (confirm("Resign Gomoku?")) send({ type: "gomoku.resign" });
     });
+    // Rematch reuses the picker's start path: the host seats players directly,
+    // a seated opponent's request is relayed to the host as a startReq.
+    $("gomoku-rematch").addEventListener("click", () => send({ type: "game.start", game: "gomoku" }));
 
     function outcomeWon() {
       if (g.outcome === "draw" || !isPlayer()) return null;
