@@ -20,6 +20,10 @@ concurrency:
 # is the static landing page only. No WASM build — just publish docs/.
 jobs:
   deploy:
+    # Upstream-only: this publishes upstream's landing page. A fork has no Pages
+    # site to deploy, and `enablement: true` would create one, so skip elsewhere.
+    # The workflow stays in place to keep upstream syncs conflict-free.
+    if: github.repository == 'richardwooding/kibitz'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

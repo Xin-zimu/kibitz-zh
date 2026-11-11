@@ -11,6 +11,11 @@ permissions:
 
 jobs:
   goreleaser:
+    # Upstream-only. goreleaser publishes to ghcr.io/richardwooding/kibitz (see
+    # .goreleaser.yaml), a namespace only the canonical repo may write to, so a
+    # tag pushed to a fork would fail here. The workflow is kept so forks can
+    # keep syncing upstream; it simply skips everywhere else.
+    if: github.repository == 'richardwooding/kibitz'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
